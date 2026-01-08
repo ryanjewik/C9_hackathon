@@ -1,5 +1,0 @@
-psql -U postgres -d cloud9 -f schema.sql
-
-E:\cloud9_hackathon\.venv\Scripts\python.exe vlr_scraper.py --tournament 2283 --db-pass "Happyrhino8!"
-
-python vlr_scraper.py --all-tiers
