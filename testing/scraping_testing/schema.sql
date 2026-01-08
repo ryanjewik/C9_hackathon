@@ -16,6 +16,7 @@ DROP TABLE IF EXISTS esports_tournaments CASCADE;
 CREATE TABLE esports_tournaments (
     id INTEGER PRIMARY KEY,  -- VLR event ID from URL
     name VARCHAR(255) NOT NULL,
+    tier VARCHAR(20) CHECK (tier IN ('VCT', 'VCL', 'Offseason')),
     start_date DATE,
     end_date DATE,
     prize_pool VARCHAR(100),
