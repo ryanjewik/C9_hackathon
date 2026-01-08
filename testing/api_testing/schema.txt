@@ -1,0 +1,49 @@
+Esports data tables:
+esports_players table:
+player stats aggregated over rounds, name, wins, losses, titles, current team, previous teams
+
+esports_rosters table:
+team name, their current five players, date_created, maybe a list of previous players, titles, wins, losses, org id?
+
+esports_tournaments table:
+id, name, start_date, end_date, prize_pool, location, 1st_place, 2nd_place, 3rd_place, 4th_place, 5-6_place_1, 5-6_place_2, 7-8_place_1, 7-8_place_2
+
+esports_matches table:
+two teams and their ids, date, stage/phase, final score, tournament id
+
+esports_game_scores table:
+id, match_id, team_1 score, team_2 score, team_1_id, team_2_id, team_1_name, team_2_name, map
+
+esports_player_games table:
+includes a player with their agent, their stats, their team, and if they won or lost with the score, match id
+
+esports_map_veto table:
+id (serial), match_id. type (ban or pick), team_id, map_selected
+
+do we make a new "team" for every iteration of the roster? if so we add an org id to the teams table and an org table for the org name and id
+
+esports_teams table:
+id, name, titles, wins, losses, list of previous teams
+
+
+business logic tables:
+
+users table:
+id, name, email, date created, organization, role
+
+
+organization table:
+id, name, date created
+
+chat messages:
+id, content, timestamp, author (bot will be -1), conversation_id
+
+conversations:
+id, date_created, organization_id
+
+vods table:
+id, org id, created_at, vod_name (how it appears on the list and how it will be stored / retrieved from s3)
+EXTRA NOTE: timescale db row for the timestamps can use the vod id to point to the vod if needed
+
+notes table:
+id, content, author, timestamp, reply_id  (can reference another note), vod_id
