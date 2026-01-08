@@ -26,6 +26,9 @@ __pycache__/
 # ignore single test file from scraping tests
 **/test_scrape.txt
 
+# Ignore README files
+**/README.md
+
 # ignore api_testing virtualenv (3.11)
 testing/api_testing/.venv311/
 
