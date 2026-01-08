@@ -1,0 +1,43 @@
+# Python virtualenvs
+# specific test envs (kept for history)
+testing/api_testing/.venv311/
+testing/api_testing/.venv/
+testing/cv_testing/.venv/
+
+# Common venv names anywhere in the repo
+**/.venv/
+**/venv/
+**/env/
+**/.venv311/
+
+# Bytecode
+__pycache__/
+*.py[cod]
+*.pyc
+
+# Editor
+.vscode/
+
+# Media
+*.mp4
+**/*.mp4
+
+# Project/testing specific ignores
+# ignore single test file from scraping tests
+**/test_scrape.txt
+
+# Ignore README files
+**/README.md
+
+# ignore api_testing virtualenv (3.11)
+testing/api_testing/.venv311/
+
+# env files
+.env
+**/.env
+
+# python caches
+**/__pycache__/
+
+# scraping_testing README (local notes)
+testing/scraping_testing/README.md
