@@ -57,6 +57,7 @@ DB_CONFIG = {
 class Tournament:
     id: int
     name: str
+    tier: Optional[str]  # VCT, VCL, or Offseason
     start_date: Optional[date]
     end_date: Optional[date]
     prize_pool: Optional[str]
@@ -153,34 +154,63 @@ class PlayerGameStats:
 # ============================================================================
 
 class VLRFetcher:
-    """Handles HTTP requests with rate limiting."""
+    """Handles HTTP requests with rate limiting and retry logic."""
     
-    def __init__(self, delay: float = REQUEST_DELAY):
+    def __init__(self, delay: float = REQUEST_DELAY, max_retries: int = 10):
         self.delay = delay
+        self.max_retries = max_retries
         self.last_request_time = 0
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
     
     def fetch(self, url: str) -> Optional[BeautifulSoup]:
-        """Fetch a page and return BeautifulSoup object."""
+        """Fetch a page and return BeautifulSoup object with retry logic."""
         # Rate limiting
         elapsed = time.time() - self.last_request_time
         if elapsed < self.delay:
             time.sleep(self.delay - elapsed)
         
-        try:
-            full_url = urljoin(BASE_URL, url) if not url.startswith('http') else url
-            logger.debug(f"Fetching: {full_url}")
-            
-            response = self.session.get(full_url, timeout=30)
-            response.raise_for_status()
-            
-            self.last_request_time = time.time()
-            return BeautifulSoup(response.text, 'html.parser')
+        full_url = urljoin(BASE_URL, url) if not url.startswith('http') else url
         
-        except requests.RequestException as e:
-            logger.error(f"Failed to fetch {url}: {e}")
-            return None
+        for attempt in range(self.max_retries):
+            try:
+                logger.debug(f"Fetching: {full_url}")
+                
+                response = self.session.get(full_url, timeout=30)
+                response.raise_for_status()
+                
+                self.last_request_time = time.time()
+                return BeautifulSoup(response.text, 'html.parser')
+            
+            except requests.HTTPError as e:
+                # Don't retry 4xx client errors (404, 403, etc.) - they're permanent
+                if e.response is not None and 400 <= e.response.status_code < 500:
+                    logger.warning(f"Client error {e.response.status_code} for {url}, not retrying")
+                    return None
+                # Retry 5xx server errors
+                wait_time = min(2 ** attempt * 5, 300)
+                if attempt < self.max_retries - 1:
+                    logger.warning(f"Fetch failed (attempt {attempt + 1}/{self.max_retries}): {url}")
+                    logger.warning(f"Error: {e}")
+                    logger.info(f"Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"Failed to fetch {url} after {self.max_retries} attempts: {e}")
+                    return None
+            
+            except requests.RequestException as e:
+                wait_time = min(2 ** attempt * 5, 300)  # 5s, 10s, 20s, 40s, 80s (max 5min)
+                
+                if attempt < self.max_retries - 1:
+                    logger.warning(f"Fetch failed (attempt {attempt + 1}/{self.max_retries}): {url}")
+                    logger.warning(f"Error: {e}")
+                    logger.info(f"Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"Failed to fetch {url} after {self.max_retries} attempts: {e}")
+                    return None
+        
+        return None
 
 
 # ============================================================================
@@ -230,7 +260,7 @@ class VLRParser:
         return max_page
     
     @staticmethod
-    def parse_tournament(soup: BeautifulSoup, event_id: int) -> Optional[Tournament]:
+    def parse_tournament(soup: BeautifulSoup, event_id: int, tier: Optional[str] = None) -> Optional[Tournament]:
         """Parse tournament/event page for tournament info."""
         try:
             # Name
@@ -288,6 +318,7 @@ class VLRParser:
             return Tournament(
                 id=event_id,
                 name=name,
+                tier=tier,
                 start_date=start_date,
                 end_date=end_date,
                 prize_pool=prize_pool,
@@ -909,16 +940,17 @@ class Database:
         """Insert or update a tournament."""
         with self.conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO esports_tournaments (id, name, start_date, end_date, prize_pool, location, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO esports_tournaments (id, name, tier, start_date, end_date, prize_pool, location, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (id) DO UPDATE SET
                     name = EXCLUDED.name,
+                    tier = EXCLUDED.tier,
                     start_date = EXCLUDED.start_date,
                     end_date = EXCLUDED.end_date,
                     prize_pool = EXCLUDED.prize_pool,
                     location = EXCLUDED.location,
                     status = EXCLUDED.status
-            """, (t.id, t.name, t.start_date, t.end_date, t.prize_pool, t.location, t.status))
+            """, (t.id, t.name, t.tier, t.start_date, t.end_date, t.prize_pool, t.location, t.status))
     
     def tournament_exists(self, tournament_id: int) -> bool:
         """Check if a tournament exists."""
@@ -943,6 +975,12 @@ class Database:
         """Check if a team exists."""
         with self.conn.cursor() as cur:
             cur.execute("SELECT 1 FROM esports_teams WHERE id = %s", (team_id,))
+            return cur.fetchone() is not None
+    
+    def player_exists(self, player_id: int) -> bool:
+        """Check if a player exists."""
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM esports_players WHERE id = %s", (player_id,))
             return cur.fetchone() is not None
     
     def get_team_tag(self, team_id: int) -> Optional[str]:
@@ -1044,10 +1082,25 @@ class Database:
             """, (v.match_id, v.veto_type, v.team_id, v.map_selected, v.turn))
     
     # Roster operations
-    def get_or_create_roster(self, team_id: int, player_ids: List[int], match_date: Optional[date]) -> int:
-        """Get existing roster or create new one. Returns roster ID."""
+    def get_or_create_roster(self, team_id: int, player_ids: List[int], match_date: Optional[date]) -> Optional[int]:
+        """Get existing roster or create new one. Returns roster ID or None if players missing."""
+        # Filter out any player IDs that don't exist in the database
+        valid_player_ids = []
+        with self.conn.cursor() as cur:
+            for pid in player_ids:
+                if pid:
+                    cur.execute("SELECT 1 FROM esports_players WHERE id = %s", (pid,))
+                    if cur.fetchone():
+                        valid_player_ids.append(pid)
+                    else:
+                        logger.warning(f"Player {pid} not found in database, excluding from roster")
+        
+        if len(valid_player_ids) < 3:  # Need at least 3 valid players for a roster
+            logger.warning(f"Not enough valid players for roster (have {len(valid_player_ids)}), skipping")
+            return None
+        
         # Sort player IDs for consistent matching
-        sorted_ids = sorted(player_ids)
+        sorted_ids = sorted(valid_player_ids)
         # Pad to 5 players
         while len(sorted_ids) < 5:
             sorted_ids.append(None)
@@ -1442,7 +1495,7 @@ class VLRScraper:
         
         return player
     
-    def scrape_tournament(self, event_id: int) -> bool:
+    def scrape_tournament(self, event_id: int, tier: Optional[str] = None) -> bool:
         """Scrape a complete tournament."""
         logger.info(f"Scraping tournament {event_id}")
         
@@ -1451,7 +1504,7 @@ class VLRScraper:
         if not soup:
             return False
         
-        tournament = self.parser.parse_tournament(soup, event_id)
+        tournament = self.parser.parse_tournament(soup, event_id, tier)
         if not tournament:
             return False
         
@@ -1533,11 +1586,17 @@ class VLRScraper:
         if not match:
             return
         
+        # Skip matches with invalid team IDs (0 or None indicates TBD/forfeit/unparseable)
+        if not match.team_1_id or match.team_1_id == 0:
+            logger.warning(f"Match {match_id} has invalid team_1_id ({match.team_1_id}), skipping")
+            return
+        if not match.team_2_id or match.team_2_id == 0:
+            logger.warning(f"Match {match_id} has invalid team_2_id ({match.team_2_id}), skipping")
+            return
+        
         # Ensure teams exist
-        if match.team_1_id:
-            self.scrape_team(match.team_1_id)
-        if match.team_2_id:
-            self.scrape_team(match.team_2_id)
+        self.scrape_team(match.team_1_id)
+        self.scrape_team(match.team_2_id)
         
         self.db.upsert_match(match)
         
@@ -1601,11 +1660,13 @@ class VLRScraper:
         # Create rosters for both teams if we have players
         if team_1_players:
             roster_1_id = self.db.get_or_create_roster(team_1_id, team_1_players, match_d)
-            self.db.update_team_current_roster(team_1_id, roster_1_id, match_d)
+            if roster_1_id:
+                self.db.update_team_current_roster(team_1_id, roster_1_id, match_d)
         
         if team_2_players:
             roster_2_id = self.db.get_or_create_roster(team_2_id, team_2_players, match_d)
-            self.db.update_team_current_roster(team_2_id, roster_2_id, match_d)
+            if roster_2_id:
+                self.db.update_team_current_roster(team_2_id, roster_2_id, match_d)
         
         # Log warning if a roster couldn't be created
         if not roster_1_id:
@@ -1622,6 +1683,11 @@ class VLRScraper:
         
         # Insert player stats with roster IDs
         for stats in player_stats:
+            # Skip if player doesn't exist in database (e.g., deleted player page)
+            if not self.db.player_exists(stats.player_id):
+                logger.warning(f"Player {stats.player_id} not in database, skipping stats")
+                continue
+            
             if stats.team_id == team_1_id:
                 stats.roster_id = roster_1_id
                 stats.opponent_roster_id = roster_2_id
@@ -1640,7 +1706,11 @@ class VLRScraper:
     
     def scrape_events_by_tier(self, tier: int, limit: Optional[int] = None):
         """Scrape all completed events for a given tier, iterating through all pages."""
-        logger.info(f"Fetching events with tier={tier}")
+        # Map tier ID to tier name
+        tier_names = {60: "VCT", 61: "VCL", 67: "Offseason"}
+        tier_name = tier_names.get(tier)
+        
+        logger.info(f"Fetching events with tier={tier} ({tier_name})")
         
         # Fetch first page to get pagination info
         soup = self.fetcher.fetch(f"/events/?tier={tier}")
@@ -1678,7 +1748,7 @@ class VLRScraper:
                 continue
             
             logger.info(f"Processing: {event_name} (ID: {event_id})")
-            self.scrape_tournament(event_id)
+            self.scrape_tournament(event_id, tier_name)
     
     def close(self):
         """Clean up resources."""
