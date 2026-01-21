@@ -1,0 +1,60 @@
+{
+  "video": "test.mp4",
+  "kill_count": 6,
+  "kills": [
+    {
+      "t_ms": 89706.60660660661,
+      "round": 7,
+      "killer": "NRG Ethan",
+      "victim": "FNC Alfajer",
+      "killer_team": "orange",
+      "victim_team": "teal",
+      "confidence": 0.85
+    },
+    {
+      "t_ms": 89840.07340674008,
+      "round": 7,
+      "killer": "FNC Chronide",
+      "victim": "NRG Ethan",
+      "killer_team": "teal",
+      "victim_team": "orange",
+      "confidence": 0.75
+    },
+    {
+      "t_ms": 90640.87420754088,
+      "round": 7,
+      "killer": "NRG Skuba",
+      "victim": "FNC Boasler",
+      "killer_team": "orange",
+      "victim_team": "teal",
+      "confidence": 0.85
+    },
+    {
+      "t_ms": 92109.00900900901,
+      "round": 7,
+      "killer": "NRG Gum",
+      "victim": "FNC Crashicb",
+      "killer_team": "orange",
+      "victim_team": "teal",
+      "confidence": 0.85
+    },
+    {
+      "t_ms": 96379.94661327996,
+      "round": null,
+      "killer": "NRG Mada",
+      "victim": "FNC Focenronide",
+      "killer_team": "orange",
+      "victim_team": "teal",
+      "confidence": 0.85
+    },
+    {
+      "t_ms": 97180.74741408076,
+      "round": null,
+      "killer": "NRG Skuba",
+      "victim": "FNC Kajak",
+      "killer_team": "orange",
+      "victim_team": "teal",
+      "confidence": 0.85
+    }
+  ]
+}
