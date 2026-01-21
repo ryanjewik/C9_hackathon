@@ -1,0 +1,5 @@
+docker build -t valocv:cpu .
+docker run --rm -it valocv:cpu bash
+python -c "import torch; print('torch', torch.__version__)"
+python -c "import easyocr; r=easyocr.Reader(['en'], gpu=False); print('easyocr ok')"
+docker run --rm -v C:/Users/owner/Desktop/C9_hackathon/testing/cv_testing:/app -it valocv:cpu python test.py
