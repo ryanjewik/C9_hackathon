@@ -1,0 +1,13 @@
+version: "3.8"
+services:
+  valocv:
+    build: .
+    image: valocv:cpu
+    volumes:
+      - ./:/app
+    # expose a directory for outputs if you want to inspect events/debug video
+    # - ./outputs:/app/outputs
+    environment:
+      - PYTHONUNBUFFERED=1
+    # override the default command to run an interactive shell or your script
+    # command: ["python", "test.py"]
