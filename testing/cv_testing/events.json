@@ -23945,9 +23945,9 @@
     "type": "KILL_EVENT",
     "roi": "killfeed",
     "payload": {
-      "killer_name": "NRG Ethan",
+      "killer_name": "NRG handew",
       "killer_team": "orange",
-      "victim_name": "FNC Alfajer",
+      "victim_name": "FNC Alejandro",
       "victim_team": "teal",
       "weapon": "detected",
       "is_headshot": true,
@@ -23961,9 +23961,9 @@
     "type": "DEATH_EVENT",
     "roi": "killfeed",
     "payload": {
-      "player_name": "FNC Alfajer",
+      "player_name": "FNC Alejandro",
       "player_team": "teal",
-      "killed_by": "NRG Ethan",
+      "killed_by": "NRG handew",
       "weapon": "detected",
       "was_headshot": true,
       "round_number": 7
@@ -23987,35 +23987,6 @@
     "payload": {
       "team": "right",
       "slot": 4,
-      "round_number": 7
-    }
-  },
-  {
-    "t_ms": 89840.07340674008,
-    "type": "KILL_EVENT",
-    "roi": "killfeed",
-    "payload": {
-      "killer_name": "FNC Chronide",
-      "killer_team": "teal",
-      "victim_name": "NRG Ethan",
-      "victim_team": "orange",
-      "weapon": "detected",
-      "is_headshot": false,
-      "confidence": 0.75,
-      "assisters": [],
-      "round_number": 7
-    }
-  },
-  {
-    "t_ms": 89840.07340674008,
-    "type": "DEATH_EVENT",
-    "roi": "killfeed",
-    "payload": {
-      "player_name": "NRG Ethan",
-      "player_team": "orange",
-      "killed_by": "FNC Chronide",
-      "weapon": "detected",
-      "was_headshot": false,
       "round_number": 7
     }
   },
@@ -24140,6 +24111,35 @@
     }
   },
   {
+    "t_ms": 90507.40740740742,
+    "type": "KILL_EVENT",
+    "roi": "killfeed",
+    "payload": {
+      "killer_name": "FNC ryoidenshi",
+      "killer_team": "teal",
+      "victim_name": "NRG handew",
+      "victim_team": "orange",
+      "weapon": "detected",
+      "is_headshot": false,
+      "confidence": 0.85,
+      "assisters": [],
+      "round_number": 7
+    }
+  },
+  {
+    "t_ms": 90507.40740740742,
+    "type": "DEATH_EVENT",
+    "roi": "killfeed",
+    "payload": {
+      "player_name": "NRG handew",
+      "player_team": "orange",
+      "killed_by": "FNC ryoidenshi",
+      "weapon": "detected",
+      "was_headshot": false,
+      "round_number": 7
+    }
+  },
+  {
     "t_ms": 90574.14080747415,
     "type": "MINIMAP_PLAYER_CHANGE",
     "roi": "minimap",
@@ -24213,9 +24213,9 @@
     "type": "KILL_EVENT",
     "roi": "killfeed",
     "payload": {
-      "killer_name": "NRG Skuba",
+      "killer_name": "NRG abu",
       "killer_team": "orange",
-      "victim_name": "FNC Boasler",
+      "victim_name": "FNC Rayleigh",
       "victim_team": "teal",
       "weapon": "detected",
       "is_headshot": false,
@@ -24229,9 +24229,9 @@
     "type": "DEATH_EVENT",
     "roi": "killfeed",
     "payload": {
-      "player_name": "FNC Boasler",
+      "player_name": "FNC Rayleigh",
       "player_team": "teal",
-      "killed_by": "NRG Skuba",
+      "killed_by": "NRG abu",
       "weapon": "detected",
       "was_headshot": false,
       "round_number": 7
@@ -24826,35 +24826,6 @@
     }
   },
   {
-    "t_ms": 92109.00900900901,
-    "type": "KILL_EVENT",
-    "roi": "killfeed",
-    "payload": {
-      "killer_name": "NRG Gum",
-      "killer_team": "orange",
-      "victim_name": "FNC Crashicb",
-      "victim_team": "teal",
-      "weapon": "detected",
-      "is_headshot": false,
-      "confidence": 0.85,
-      "assisters": [],
-      "round_number": 7
-    }
-  },
-  {
-    "t_ms": 92109.00900900901,
-    "type": "DEATH_EVENT",
-    "roi": "killfeed",
-    "payload": {
-      "player_name": "FNC Crashicb",
-      "player_team": "teal",
-      "killed_by": "NRG Gum",
-      "weapon": "detected",
-      "was_headshot": false,
-      "round_number": 7
-    }
-  },
-  {
     "t_ms": 92175.74240907576,
     "type": "MINIMAP_PLAYER_CHANGE",
     "roi": "minimap",
@@ -25013,6 +24984,35 @@
     "payload": {
       "team": "left",
       "slot": 3,
+      "round_number": 7
+    }
+  },
+  {
+    "t_ms": 92909.80980980981,
+    "type": "KILL_EVENT",
+    "roi": "killfeed",
+    "payload": {
+      "killer_name": "NRG abu",
+      "killer_team": "orange",
+      "victim_name": "FNC Stunner",
+      "victim_team": "teal",
+      "weapon": "detected",
+      "is_headshot": false,
+      "confidence": 0.85,
+      "assisters": [],
+      "round_number": 7
+    }
+  },
+  {
+    "t_ms": 92909.80980980981,
+    "type": "DEATH_EVENT",
+    "roi": "killfeed",
+    "payload": {
+      "player_name": "FNC Stunner",
+      "player_team": "teal",
+      "killed_by": "NRG abu",
+      "weapon": "detected",
+      "was_headshot": false,
       "round_number": 7
     }
   },
@@ -26356,9 +26356,9 @@
     "type": "KILL_EVENT",
     "roi": "killfeed",
     "payload": {
-      "killer_name": "NRG Mada",
+      "killer_name": "NRG Made",
       "killer_team": "orange",
-      "victim_name": "FNC Focenronide",
+      "victim_name": "FNC chef andro",
       "victim_team": "teal",
       "weapon": "detected",
       "is_headshot": true,
@@ -26371,9 +26371,9 @@
     "type": "DEATH_EVENT",
     "roi": "killfeed",
     "payload": {
-      "player_name": "FNC Focenronide",
+      "player_name": "FNC chef andro",
       "player_team": "teal",
-      "killed_by": "NRG Mada",
+      "killed_by": "NRG Made",
       "weapon": "detected",
       "was_headshot": true
     }
@@ -26546,9 +26546,9 @@
     "type": "KILL_EVENT",
     "roi": "killfeed",
     "payload": {
-      "killer_name": "NRG Skuba",
+      "killer_name": "NRG abu",
       "killer_team": "orange",
-      "victim_name": "FNC Kajak",
+      "victim_name": "FNC KAJMAN",
       "victim_team": "teal",
       "weapon": "detected",
       "is_headshot": false,
@@ -26561,9 +26561,9 @@
     "type": "DEATH_EVENT",
     "roi": "killfeed",
     "payload": {
-      "player_name": "FNC Kajak",
+      "player_name": "FNC KAJMAN",
       "player_team": "teal",
-      "killed_by": "NRG Skuba",
+      "killed_by": "NRG abu",
       "weapon": "detected",
       "was_headshot": false
     }

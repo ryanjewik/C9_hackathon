@@ -2543,14 +2543,16 @@ def collect_players_from_killfeed_scan(cap: cv2.VideoCapture, duration_sec: floa
     fps = cap.get(cv2.CAP_PROP_FPS) or 60.0
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
-    # Start a few seconds in
-    start_frame = int(fps * 2)
-    end_frame = start_frame + int(fps * duration_sec)
+    # Scan the entire video (or up to duration_sec, whichever is shorter)
+    start_frame = 0
+    max_frames = int(fps * duration_sec) if duration_sec > 0 else total_frames
+    end_frame = min(total_frames, max_frames)
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
     
     # Sample every N frames
-    sample_interval = int(fps / 4)  # ~4 samples per second
+    sample_interval = int(fps / 2)  # ~2 samples per second for more coverage
     
     all_names = set()
     frame_count = 0
@@ -2624,40 +2626,60 @@ def collect_players_from_killfeed_scan(cap: cv2.VideoCapture, duration_sec: floa
         name_lower = name.lower().strip()
         name_normalized = ocr_normalize(name_lower)
         
+        # Skip very short names (likely noise)
+        if len(name_lower) < 3:
+            continue
+        
+        best_match = None
+        best_score = 0.0
+        
         for db_name in db_names:
             db_lower = db_name.lower()
             db_normalized = ocr_normalize(db_lower)
             
-            # Exact match (case insensitive)
+            # Exact match (case insensitive) - highest priority
             if name_lower == db_lower:
-                matched_players.append(db_name)
+                best_match = db_name
+                best_score = 1.0
                 break
             
-            # Exact match after OCR normalization
+            # Exact match after OCR normalization - also high priority
             if name_normalized == db_normalized:
-                matched_players.append(db_name)
+                best_match = db_name
+                best_score = 0.99
                 break
             
-            # Substring match for longer names
-            if len(name_lower) >= 4 and len(db_lower) >= 4:
-                if name_lower in db_lower or db_lower in name_lower:
-                    matched_players.append(db_name)
-                    break
-                if name_normalized in db_normalized or db_normalized in name_normalized:
-                    matched_players.append(db_name)
-                    break
-            
-            # Fuzzy match with lower threshold (0.5 instead of 0.7)
+            # Calculate similarity scores
             score = calculate_similarity(name_lower, db_lower)
             score_norm = calculate_similarity(name_normalized, db_normalized)
-            if max(score, score_norm) > 0.5:
-                matched_players.append(db_name)
-                break
+            current_score = max(score, score_norm)
+            
+            # Bonus for similar length (to avoid short matches in long names)
+            len_diff = abs(len(name_lower) - len(db_lower))
+            if len_diff <= 2:
+                current_score += 0.1
+            elif len_diff <= 4:
+                current_score += 0.05
+            
+            if current_score > best_score:
+                best_score = current_score
+                best_match = db_name
+        
+        # Only accept match if score is high enough (0.75 for better accuracy)
+        if best_match and best_score >= 0.75:
+            matched_players.append(best_match)
+            print(f"  MATCH: '{name}' -> '{best_match}' (score={best_score:.2f})")
     
     # Deduplicate
     unique_players = list(set(matched_players))
     
-    print(f"\nCollected {len(all_names)} raw names, matched {len(unique_players)} to database:")
+    print(f"\nRaw names collected from killfeed: {len(all_names)}")
+    for name in sorted(all_names)[:20]:  # Show first 20
+        print(f"  RAW: '{name}'")
+    if len(all_names) > 20:
+        print(f"  ... and {len(all_names) - 20} more")
+    
+    print(f"\nMatched {len(unique_players)} to database:")
     for name in unique_players:
         print(f"  - {name}")
     print("="*50 + "\n")
@@ -2678,7 +2700,8 @@ def auto_detect_match_players(cap: cv2.VideoCapture, num_samples: int = 5) -> Li
         List of unique player names detected
     """
     # Primary method: scan killfeed for player names
-    players = collect_players_from_killfeed_scan(cap, duration_sec=30.0)
+    # Scan up to 120 seconds or entire video to find all player names
+    players = collect_players_from_killfeed_scan(cap, duration_sec=120.0)
     
     if len(players) >= 6:  # Got enough players from killfeed
         return players
@@ -2733,7 +2756,14 @@ def auto_detect_match_players(cap: cv2.VideoCapture, num_samples: int = 5) -> Li
 
 
 def main():
-    video_path = "test.mp4"
+    import sys
+    
+    # Get video path from command line or use default
+    if len(sys.argv) > 1:
+        video_path = sys.argv[1]
+    else:
+        video_path = "test.mp4"
+    
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError(f"Could not open {video_path}")
