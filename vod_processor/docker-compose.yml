@@ -1,0 +1,149 @@
+version: "3.8"
+
+services:
+  # ===========================================
+  # VOD Processor API Service
+  # ===========================================
+  vod-api:
+    build:
+      context: .
+      target: production
+    image: vod-processor:latest
+    container_name: vod-processor-api
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-cloud9}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
+      - REDIS_URL=redis://redis:6379/0
+      - UPLOAD_DIR=/app/uploads
+      - OUTPUT_DIR=/app/outputs
+      - MAX_UPLOAD_SIZE_MB=5000
+      - USE_GPU=true
+    volumes:
+      - vod_uploads:/app/uploads
+      - vod_outputs:/app/outputs
+      - ./logs:/app/logs
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+    # Enable NVIDIA GPU support
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ===========================================
+  # Celery Worker for Background Processing
+  # ===========================================
+  vod-worker:
+    build:
+      context: .
+      target: production
+    image: vod-processor:latest
+    container_name: vod-processor-worker
+    command: celery -A app.worker worker --loglevel=info --concurrency=2
+    environment:
+      - PYTHONUNBUFFERED=1
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-cloud9}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
+      - REDIS_URL=redis://redis:6379/0
+      - UPLOAD_DIR=/app/uploads
+      - OUTPUT_DIR=/app/outputs
+      - USE_GPU=true
+      # GPU configuration for PaddlePaddle
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=all
+      - FLAGS_fraction_of_gpu_memory_to_use=0.8
+      # CUDA and cuDNN library paths (required for PaddlePaddle GPU)
+      - LD_LIBRARY_PATH=/usr/local/cuda-12.1/targets/x86_64-linux/lib:/usr/lib/x86_64-linux-gnu:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+    volumes:
+      - vod_uploads:/app/uploads
+      - vod_outputs:/app/outputs
+      - ./logs:/app/logs
+      - surya_models:/home/appuser/.cache/datalab/models
+      # Mount source code for live development (no need to rebuild/copy)
+      - ./app:/app/app:ro
+      - ./config:/app/config:ro
+      - ../run_processing_db.py:/app/run_processing_db.py:ro
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+    # Enable NVIDIA GPU support for OCR acceleration
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # ===========================================
+  # Redis for Task Queue
+  # ===========================================
+  redis:
+    image: redis:7-alpine
+    container_name: vod-processor-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===========================================
+  # PostgreSQL Database
+  # Uses existing backup.sql from project root
+  # ===========================================
+  postgres:
+    image: postgres:17-alpine
+    container_name: vod-processor-postgres
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-cloud9}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
+    ports:
+      - "5433:5432"  # Use 5433 to avoid conflicts with host postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Mount restore script and backup file
+      - ./db_init/restore.sh:/docker-entrypoint-initdb.d/00-restore.sh:ro
+      - ../backup.sql:/docker-entrypoint-initdb.d/backup.sql:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  vod_uploads:
+  vod_outputs:
+  redis_data:
+  postgres_data:
+  surya_models:
+
+networks:
+  default:
+    name: vod-processor-network

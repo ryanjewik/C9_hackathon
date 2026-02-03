@@ -1,0 +1,35 @@
+"""Configuration module for VOD Processor."""
+
+from config.settings import (
+    Settings,
+    get_settings,
+    ROI_CONFIG,
+    PLAYER_CARD_SUBREGIONS,
+    BOTTOM_HUD_SUBREGIONS,
+    DETECTOR_FPS,
+    TEAM_COLORS,
+    KILLFEED_ROW_HEIGHT_RANGE,
+    KILLFEED_MAX_ROWS,
+    KILL_DEDUP_WINDOW_MS,
+    KILLFEED_ROW_ROIS,
+    KILLFEED_NUM_ROWS,
+    KILLFEED_EXTENDED_ROWS,
+    OCR_NAME_CORRECTIONS,
+)
+
+__all__ = [
+    "Settings",
+    "get_settings",
+    "ROI_CONFIG",
+    "PLAYER_CARD_SUBREGIONS",
+    "BOTTOM_HUD_SUBREGIONS",
+    "DETECTOR_FPS",
+    "TEAM_COLORS",
+    "KILLFEED_ROW_HEIGHT_RANGE",
+    "KILLFEED_MAX_ROWS",
+    "KILL_DEDUP_WINDOW_MS",
+    "KILLFEED_ROW_ROIS",
+    "KILLFEED_NUM_ROWS",
+    "KILLFEED_EXTENDED_ROWS",
+    "OCR_NAME_CORRECTIONS",
+]
