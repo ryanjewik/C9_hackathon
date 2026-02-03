@@ -41,3 +41,6 @@ testing/api_testing/.venv311/
 
 # scraping_testing README (local notes)
 testing/scraping_testing/README.md
+
+# Architecture doc (local reference)
+testing/cv_testing/architecture.md
