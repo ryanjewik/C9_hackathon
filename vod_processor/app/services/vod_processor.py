@@ -346,7 +346,7 @@ class VODProcessor:
                 right_panels_roi = crop(frame, roi_px_cache.get("right_panels", (0, 0, 1, 1)))
                 
                 frame_state = frame_state_detector.detect_state(
-                    frame, replay_roi, score_bar_roi, left_panels_roi, right_panels_roi
+                    frame, replay_roi, score_bar_roi, left_panels_roi, right_panels_roi, t_ms
                 )
                 
                 # Emit frame state change event
@@ -361,6 +361,14 @@ class VODProcessor:
                         },
                         confidence=0.9
                     ))
+                    
+                    # Notify KillfeedDetector when entering REPLAY mode
+                    # This allows it to filter out kills that happened just before the replay
+                    if frame_state == "REPLAY" and prev_frame_state == "GAMEPLAY":
+                        for d in detectors:
+                            if hasattr(d, 'on_replay_detected'):
+                                d.on_replay_detected(t_ms)
+                    
                     prev_frame_state = frame_state
                 
                 # Skip non-gameplay frames
@@ -420,10 +428,22 @@ class VODProcessor:
             
             cap.release()
             
+            # Flush any remaining pending kills from KillfeedDetector
+            for d in detectors:
+                if hasattr(d, '_pending_kills') and d._pending_kills:
+                    print(f"[{job_id}] Flushing {len(d._pending_kills)} pending kill events at end of video")
+                    all_events.extend(d._pending_kills)
+                    d._pending_kills.clear()
+            
             # Post-process events
             self._job_manager.update_job_status(
                 job_id, JobStatus.PROCESSING, "Post-processing events..."
             )
+            
+            # Filter out ghost players (OCR artifacts that matched historical roster names)
+            # A ghost player appears only 1-2 times total (kills + deaths) when real players
+            # typically have many more interactions across a full match
+            all_events = self._filter_ghost_player_kills(job_id, all_events)
             
             # Build timeline
             timeline = self._build_timeline(
@@ -795,6 +815,73 @@ class VODProcessor:
             })
         timeline.sort(key=lambda x: x["t_ms"])
         return timeline
+    
+    def _filter_ghost_player_kills(self, job_id: str, events: List[Event]) -> List[Event]:
+        """
+        Filter out kills involving 'ghost players' - OCR artifacts that happened to
+        match a name in the historical roster but only appear 1-2 times in the match.
+        
+        Real players in a full VALORANT match typically have 10+ total interactions
+        (kills + deaths combined). A player with only 1-2 appearances is likely an
+        OCR error that coincidentally matched a roster name.
+        
+        We filter conservatively: only remove if player has ≤2 total appearances
+        AND the player is ONLY a victim (never got a kill themselves).
+        """
+        from collections import defaultdict
+        
+        # Count total appearances (kills + deaths) per player
+        kill_counts = defaultdict(int)
+        death_counts = defaultdict(int)
+        
+        for e in events:
+            if e.type == "KILL_EVENT":
+                killer = e.payload.get("killer_name", "Unknown")
+                victim = e.payload.get("victim_name", "Unknown")
+                if killer and killer != "Unknown":
+                    kill_counts[killer] += 1
+                if victim and victim != "Unknown":
+                    death_counts[victim] += 1
+        
+        # Identify ghost players: ≤2 total appearances AND only as victim (0 kills)
+        ghost_players = set()
+        for player in set(kill_counts.keys()) | set(death_counts.keys()):
+            total_appearances = kill_counts[player] + death_counts[player]
+            player_kills = kill_counts[player]
+            
+            # Ghost criteria: very few appearances AND never got a kill
+            # (a player with even 1 kill is likely real since OCR read both killer + victim)
+            if total_appearances <= 2 and player_kills == 0:
+                ghost_players.add(player)
+        
+        if ghost_players:
+            print(f"[{job_id}] Ghost player filter: identified {len(ghost_players)} potential ghost players: {ghost_players}")
+        
+        # Filter out kills involving ghost players
+        filtered_events = []
+        removed_count = 0
+        
+        for e in events:
+            if e.type == "KILL_EVENT":
+                killer = e.payload.get("killer_name", "Unknown")
+                victim = e.payload.get("victim_name", "Unknown")
+                
+                if victim in ghost_players:
+                    # Remove this kill - the victim is a ghost player
+                    removed_count += 1
+                    t_sec = e.t_ms / 1000
+                    print(f"[{job_id}] Ghost filter removed: {killer} killed {victim} at t={t_sec:.1f}s (ghost victim)")
+                    continue
+                    
+                # Note: We don't filter by ghost killer because if OCR read the killer name,
+                # it's more likely the victim was also read correctly
+            
+            filtered_events.append(e)
+        
+        if removed_count > 0:
+            print(f"[{job_id}] Ghost player filter: removed {removed_count} kill events")
+        
+        return filtered_events
     
     def _build_kill_summary(self, kill_events: List[Event], round_transitions: List[Event]) -> Dict[str, Any]:
         """Build a summary of kills with team assignments."""
@@ -1315,11 +1402,16 @@ class FrameStateDetector:
     - TRANSITION: Player cam, pre-match, etc. (skip - no HUD)
     """
     
+    # How long to persist REPLAY state after detection (in frames at ~6fps = ~2 seconds)
+    REPLAY_PERSIST_FRAMES = 12
+    
     def __init__(self):
         self._ocr_reader = None
         self._ocr_initialized = False
         self._last_state = "GAMEPLAY"
         self._state_count = 0  # For hysteresis
+        self._replay_persist_counter = 0  # Persist REPLAY state for a few frames
+        self._last_replay_detection_logged = False
     
     def _init_ocr(self):
         """Lazily initialize OCR for replay text detection."""
@@ -1341,6 +1433,7 @@ class FrameStateDetector:
         score_bar_roi: np.ndarray,
         left_panels_roi: np.ndarray,
         right_panels_roi: np.ndarray,
+        t_ms: float = 0,
     ) -> str:
         """
         Detect the current frame state.
@@ -1351,7 +1444,17 @@ class FrameStateDetector:
             "TRANSITION" - Non-gameplay screen, skip all processing
         """
         # Check for REPLAY or CLUTCH indicator (skip killfeed during these overlays)
-        if self._detect_replay_or_clutch_text(replay_roi):
+        detected_replay = self._detect_replay_or_clutch_text(replay_roi, t_ms)
+        
+        if detected_replay:
+            # Reset persist counter on fresh detection
+            self._replay_persist_counter = self.REPLAY_PERSIST_FRAMES
+            return "REPLAY"
+        
+        # If we detected REPLAY recently, persist the state for a few more frames
+        # This handles cases where OCR misses a frame but replay is still showing
+        if self._replay_persist_counter > 0:
+            self._replay_persist_counter -= 1
             return "REPLAY"
         
         # Check if standard HUD is present
@@ -1360,7 +1463,7 @@ class FrameStateDetector:
         
         return "GAMEPLAY"
     
-    def _detect_replay_or_clutch_text(self, replay_roi: np.ndarray) -> bool:
+    def _detect_replay_or_clutch_text(self, replay_roi: np.ndarray, t_ms: float = 0) -> bool:
         """
         Detect if "REPLAY" or "CLUTCH" text is visible in the bottom-right corner.
         Uses OCR to look for these overlay texts.
@@ -1380,37 +1483,43 @@ class FrameStateDetector:
         # Look for high-contrast white text on dark background
         gray = cv2.cvtColor(replay_roi, cv2.COLOR_BGR2GRAY)
         
-        # The REPLAY/CLUTCH text is typically white/light on dark
-        _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+        # The REPLAY/CLUTCH text is typically white/light on darker semi-transparent overlay
+        # Use adaptive threshold for better detection across varying backgrounds
+        _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
         white_ratio = np.sum(thresh > 0) / thresh.size
         
-        # If there's significant white text, try OCR
-        if white_ratio > 0.05 and white_ratio < 0.6:
+        # If there's some white content, try OCR (lowered threshold from 0.05 to 0.02)
+        if white_ratio > 0.02 and white_ratio < 0.7:
             self._init_ocr()
             if self._ocr_reader:
                 try:
-                    # Use broader allowlist to detect both REPLAY and CLUTCH
+                    # First try without allowlist for better detection
                     results = self._ocr_reader.readtext(
                         replay_roi, 
                         detail=0,
-                        paragraph=True,
-                        allowlist='REPLAYreplayCLUTCHclutch'
+                        paragraph=False,  # Don't merge - we want individual words
                     )
                     for text in results:
                         if isinstance(text, str):
-                            text_upper = text.upper().replace(" ", "")
+                            text_upper = text.upper().replace(" ", "").replace("_", "")
                             # CLUTCH = skip to avoid replay duplicates
-                            if "CLUTCH" in text_upper:
+                            if "CLUTCH" in text_upper or "CLUT" in text_upper:
+                                if not self._last_replay_detection_logged:
+                                    print(f"[FrameState] CLUTCH detected at t={t_ms/1000:.1f}s - entering REPLAY mode")
+                                    self._last_replay_detection_logged = True
                                 return True
                             # REPLAY = replay footage, skip to avoid duplicates
-                            if "REPLAY" in text_upper or "REPLA" in text_upper:
+                            # Also match common OCR errors: REPLA, REPIAY, REPALY
+                            if "REPLAY" in text_upper or "REPLA" in text_upper or "REPIAY" in text_upper:
+                                if not self._last_replay_detection_logged:
+                                    print(f"[FrameState] REPLAY detected at t={t_ms/1000:.1f}s - entering REPLAY mode")
+                                    self._last_replay_detection_logged = True
                                 return True
                 except Exception:
                     pass
         
-        # Removed heuristic method - it was causing false positives
-        # The dark banner + white text pattern matches too many things
-        # (player cards, health bars, etc.)
+        # If we get here without detection, reset the logged flag
+        self._last_replay_detection_logged = False
         
         return False
     
@@ -1554,6 +1663,31 @@ class KillfeedDetector(BaseDetector):
         # Track the round transition time for accurate round display in buffer window
         self._last_transition_ms: float = 0.0
         self._last_transition_round: int = 0
+        
+        # REPLAY lookback filter: When REPLAY is detected, invalidate kills from the
+        # previous ~1 second because the replay overlay appears slightly AFTER the
+        # killfeed starts showing replay content
+        self._REPLAY_LOOKBACK_MS: float = 1500  # 1.5 seconds lookback
+        self._pending_kills: List[Event] = []  # Buffer kills before confirming them
+    
+    def on_replay_detected(self, replay_start_ms: float):
+        """
+        Called when REPLAY mode is detected. Filter out any pending kills that
+        happened within the lookback window - they're likely from the start of
+        the replay segment.
+        """
+        cutoff_ms = replay_start_ms - self._REPLAY_LOOKBACK_MS
+        original_count = len(self._pending_kills)
+        
+        # Filter out kills within the lookback window
+        self._pending_kills = [
+            k for k in self._pending_kills
+            if k.t_ms < cutoff_ms
+        ]
+        
+        filtered_count = original_count - len(self._pending_kills)
+        if filtered_count > 0:
+            print(f"[KillfeedDetector] REPLAY lookback filter: removed {filtered_count} kill(s) from t={cutoff_ms/1000:.1f}s to t={replay_start_ms/1000:.1f}s")
     
     def set_round_start(self, timestamp_ms: float, round_number: int = 0, left_score: int = 0, right_score: int = 0):
         """
@@ -1882,6 +2016,7 @@ class KillfeedDetector(BaseDetector):
             self._row_hashes[actual_row_idx] = row_hash
             
             entry = self._parse_row(row_img)
+            
             if not entry:
                 continue
             
@@ -1894,9 +2029,6 @@ class KillfeedDetector(BaseDetector):
             
             # Filter 1: Require minimum confidence
             if confidence < 0.7:
-                # Debug: log filtered kills
-                if killer_name != "Unknown" and victim_name != "Unknown":
-                    print(f"[FILTERED-CONF] t={t_ms/1000:.1f}s: {killer_name} -> {victim_name} (conf={confidence:.2f})")
                 continue
             
             # Filter 2: Require BOTH killer and victim names (every kill has both in this VOD)
@@ -1934,18 +2066,16 @@ class KillfeedDetector(BaseDetector):
 
             # Filter 3: Skip if EITHER normalized name is Unknown (need both for valid kill)
             if killer_name_normalized == "Unknown" or victim_name_normalized == "Unknown":
-                print(f"[FILTERED-UNK] t={t_ms/1000:.1f}s: {killer_name}->{killer_name_normalized} vs {victim_name}->{victim_name_normalized}")
                 continue
             
-            # Filter 4: If we have player matcher, require at least one name to match database
-            # OR both names to be successfully normalized (not Unknown)
-            # This filters out garbage OCR while allowing valid detections
+            # Filter 4: If we have player matcher loaded, REQUIRE BOTH names to match database
+            # This prevents ghost players like "Flame" from appearing (OCR garbage that 
+            # coincidentally looks like a valid name but isn't in the match)
             if self._player_matcher:
-                has_db_match = killer_name_db is not None or victim_name_db is not None
-                if not has_db_match:
-                    # Neither matched database - both must be normalized successfully
-                    # (we already checked they're not Unknown above, so this is fine)
-                    pass  # Allow if both are valid normalized names
+                if killer_name_db is None or victim_name_db is None:
+                    # At least one name didn't match database - skip this kill
+                    # This is stricter but prevents false positives when we know the player pool
+                    continue
 
             # Check for duplicates using normalized names
             sig = (t_ms, killer_team, victim_team, killer_name_normalized, victim_name_normalized, actual_row_idx)
@@ -1972,7 +2102,7 @@ class KillfeedDetector(BaseDetector):
                 self._victim_last_death[victim_key] = (t_ms, killer_name_normalized)
 
             # Create kill event with normalized names
-            events.append(Event(
+            kill_event = Event(
                 t_ms=t_ms,
                 type="KILL_EVENT",
                 roi=self.roi_name,
@@ -1985,10 +2115,13 @@ class KillfeedDetector(BaseDetector):
                     "is_headshot": entry.get("is_headshot", False),
                 },
                 confidence=confidence
-            ))
+            )
+            
+            # Buffer kill in pending list for REPLAY lookback filtering
+            self._pending_kills.append(kill_event)
 
             # Also emit death event with normalized name
-            events.append(Event(
+            death_event = Event(
                 t_ms=t_ms,
                 type="DEATH_EVENT",
                 roi=self.roi_name,
@@ -1998,7 +2131,15 @@ class KillfeedDetector(BaseDetector):
                     "killed_by": killer_name_normalized,
                 },
                 confidence=entry.get("confidence", 0.5)
-            ))
+            )
+            self._pending_kills.append(death_event)
+        
+        # Flush confirmed kills (those older than the lookback window)
+        # This allows recent kills to be filtered if REPLAY is detected
+        flush_cutoff_ms = t_ms - self._REPLAY_LOOKBACK_MS
+        confirmed_events = [k for k in self._pending_kills if k.t_ms < flush_cutoff_ms]
+        self._pending_kills = [k for k in self._pending_kills if k.t_ms >= flush_cutoff_ms]
+        events.extend(confirmed_events)
         
         return events
 
@@ -2581,7 +2722,12 @@ class KillfeedDetector(BaseDetector):
         
         if n1 == n2:
             return 1.0
-        if n1 in n2 or n2 in n1:
+        
+        # Substring match is only valid if lengths are similar (ratio > 0.6)
+        # This prevents "Boo" vs "MiniBoo" from being considered duplicates
+        # while still catching "ardiis" vs "ardiiss" (OCR adding extra char)
+        len_ratio = min(len(n1), len(n2)) / max(len(n1), len(n2), 1)
+        if (n1 in n2 or n2 in n1) and len_ratio > 0.6:
             return 0.85
         
         # Character overlap ratio

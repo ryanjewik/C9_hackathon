@@ -94,7 +94,9 @@ ROI_CONFIG: Dict[str, Tuple[float, float, float, float]] = {
     "bottom_hud": (0.215, 0.870, 0.570, 0.125),
 
     # Frame state detection
-    "replay_indicator": (0.820, 0.880, 0.170, 0.080),
+    # replay_indicator covers bottom-right where REPLAY/CLUTCH text appears
+    # Expanded ROI to capture text that may appear in different positions
+    "replay_indicator": (0.780, 0.850, 0.210, 0.120),
     "score_bar": (0.350, 0.010, 0.300, 0.055),
     "left_panels": (0.000, 0.500, 0.185, 0.500),
     "right_panels": (0.815, 0.500, 0.185, 0.500),

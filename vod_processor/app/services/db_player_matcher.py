@@ -73,12 +73,16 @@ class DatabasePlayerMatcher:
             # Number/letter confusions
             '0': 'o', 'o': 'o', 'O': 'o',
             '1': 'l', 'l': 'l', 'I': 'l', 'i': 'l',
+            '4': 'a', 'a': 'a', 'A': 'a',  # 4 often confused with A
             '5': 's', 's': 's', 'S': 's',
             '8': 'b', 'B': 'b',
             '6': 'g', 'G': 'g',
+            '3': 'e', 'E': 'e',  # 3 can look like E
+            '7': 't', 'T': 't',  # 7 can look like T
+            '9': 'g',  # 9 can look like g
             # Common letter confusions
             'n': 'n', 'r': 'n',  # r and n look similar
-            'c': 'c', 'e': 'c',  # e and c can be confused
+            'c': 'c',  # removed e->c as it was too aggressive
             'u': 'u', 'v': 'u',  # u and v 
             'm': 'm', 'w': 'm',  # wide letters
         }
