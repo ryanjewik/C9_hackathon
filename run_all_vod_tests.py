@@ -77,7 +77,7 @@ EXPECTED_STATS = {
 
 def run_single_vod(video_filename: str, output_dir: str):
     """Run VOD processing on a single file using auto-detect mode."""
-    video_path = f"/app/{video_filename}"
+    video_path = f"/app/uploads/{video_filename}"
     
     if not os.path.exists(video_path):
         print(f"ERROR: Video file not found: {video_path}")
@@ -211,13 +211,31 @@ def compare_stats(job_id: str, video_filename: str, output_dir: str):
 
 def main():
     """Run all VOD tests."""
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--skip-vod1', action='store_true', help='Skip VOD 1 (match_vod.mp4)')
+    parser.add_argument('--vod2-only', action='store_true', help='Run only VOD 2')
+    parser.add_argument('--vod3-only', action='store_true', help='Run only VOD 3')
+    args = parser.parse_args()
+    
     output_dir = "/app/outputs"
     os.makedirs(output_dir, exist_ok=True)
     
     results = {}
     
+    # Determine which VODs to process
+    all_vods = ["match_vod.mp4", "match_vod_2.mp4", "match_vod_3.mp4"]
+    if args.vod2_only:
+        vods_to_process = ["match_vod_2.mp4"]
+    elif args.vod3_only:
+        vods_to_process = ["match_vod_3.mp4"]
+    elif args.skip_vod1:
+        vods_to_process = ["match_vod_2.mp4", "match_vod_3.mp4"]
+    else:
+        vods_to_process = all_vods
+    
     # Process each VOD
-    for video_filename in ["match_vod.mp4", "match_vod_2.mp4", "match_vod_3.mp4"]:
+    for video_filename in vods_to_process:
         print(f"\n\n{'#'*70}")
         print(f"# Starting: {video_filename}")
         print(f"{'#'*70}\n")
