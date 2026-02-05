@@ -20,7 +20,7 @@ class Job:
     created_at: datetime = field(default_factory=datetime.utcnow)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-    progress: float = 0.0
+    progress: Optional[dict] = None
     error: Optional[str] = None
     match_players: Optional[List[str]] = None
     
@@ -76,7 +76,7 @@ class JobManager:
         job_id: str,
         status: JobStatus,
         message: str = "",
-        progress: Optional[float] = None,
+        progress: Optional[dict] = None,
         error: Optional[str] = None,
     ) -> Optional[Job]:
         """Update job status."""
@@ -116,7 +116,12 @@ class JobManager:
         job.processed_frames = processed_frames
         job.total_frames = total_frames
         job.events_detected = events_detected
-        job.progress = (processed_frames / total_frames * 100) if total_frames > 0 else 0
+        # Store a structured progress object so API can return detailed counts
+        job.progress = {
+            "processed_frames": processed_frames,
+            "total_frames": total_frames,
+            "events_detected": events_detected,
+        }
         
         return job
     

@@ -423,7 +423,22 @@ class VODProcessor:
                                 d.set_halftime_start(t_ms + HALFTIME_DELAY_MS)
                 
                 all_events.extend(frame_events)
-                
+
+                # Periodically update job progress so frontend can show a progress bar
+                try:
+                    if self._job_manager:
+                        # Update every ~100 frames to avoid excessive updates
+                        if frame_idx % 100 == 0:
+                            self._job_manager.update_progress(
+                                job_id,
+                                processed_frames=int(frame_idx),
+                                total_frames=int(total_frames),
+                                events_detected=len(all_events),
+                            )
+                except Exception:
+                    # Don't let progress update failures stop processing
+                    pass
+
                 frame_idx += 1
             
             cap.release()

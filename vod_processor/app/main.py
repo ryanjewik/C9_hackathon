@@ -163,14 +163,22 @@ async def get_job_status(job_id: str):
     job = job_manager.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    
+    # Build detailed progress object expected by frontend
+    progress_obj = None
+    if job.total_frames or job.processed_frames or job.events_detected:
+        progress_obj = {
+            "processed_frames": int(job.processed_frames),
+            "total_frames": int(job.total_frames),
+            "events_detected": int(job.events_detected),
+        }
+
     return JobResponse(
         job_id=job_id,
         status=job.status,
         message=job.message,
         created_at=job.created_at,
         completed_at=job.completed_at,
-        progress=job.progress,
+        progress=progress_obj,
         error=job.error
     )
 
