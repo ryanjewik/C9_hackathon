@@ -73,7 +73,12 @@ export async function uploadVod(file: File): Promise<JobResponse> {
     throw new Error(error.detail || 'Upload failed');
   }
 
-  return response.json();
+  const data = await response.json();
+  // Normalize status casing from backend (backend returns lowercase)
+  if (data && data.status && typeof data.status === 'string') {
+    data.status = data.status.toUpperCase();
+  }
+  return data;
 }
 
 export async function getJobStatus(jobId: string): Promise<JobResponse> {
@@ -84,7 +89,11 @@ export async function getJobStatus(jobId: string): Promise<JobResponse> {
     throw new Error(error.detail || 'Failed to get job status');
   }
 
-  return response.json();
+  const data = await response.json();
+  if (data && data.status && typeof data.status === 'string') {
+    data.status = data.status.toUpperCase();
+  }
+  return data;
 }
 
 export async function getTimeline(jobId: string): Promise<TimelineData> {
