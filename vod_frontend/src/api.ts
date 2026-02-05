@@ -33,10 +33,10 @@ export interface RoundData {
   winner?: string;
   kills: KillEvent[];
   score?: {
-    left_team: number;
-    right_team: number;
-    left_team_name?: string;
-    right_team_name?: string;
+    left: number;      // Score value
+    right: number;     // Score value
+    left_team: string; // Team code (e.g., "TH")
+    right_team: string; // Team code (e.g., "PRX")
   };
 }
 
@@ -104,7 +104,54 @@ export async function getTimeline(jobId: string): Promise<TimelineData> {
     throw new Error(error.detail || 'Failed to get timeline');
   }
 
-  return response.json();
+  // Map backend TimelineResponse to frontend TimelineData shape
+  const data = await response.json();
+
+  // Backend may use `rounds_with_kills` or `rounds` depending on version
+  const rounds = data.rounds || data.rounds_with_kills || [];
+
+  // Extract team names from metadata.teams array or from round scores
+  const teams = data.metadata?.teams || [];
+  let leftTeam = teams[0] || '';
+  let rightTeam = teams[1] || '';
+  
+  // If rounds have score info, use that for more accuracy
+  if (rounds.length > 0 && rounds[0]?.score) {
+    leftTeam = rounds[0].score.left_team || leftTeam;
+    rightTeam = rounds[0].score.right_team || rightTeam;
+  }
+
+  // Map kill events to have proper display fields
+  const mappedRounds = rounds.map((round: any) => ({
+    ...round,
+    start_ms: round.round_start_ms || round.start_ms || 0,
+    kills: (round.kills || []).map((kill: any) => ({
+      ...kill,
+      timestamp_ms: kill.t_ms || kill.timestamp_ms,
+      timestamp_display: kill.timestamp || kill.timestamp_display || '',
+      killer_name: kill.killer || kill.killer_name,
+      killer_team: kill.killer_color || kill.killer_team,
+      victim_name: kill.victim || kill.victim_name,
+      victim_team: kill.victim_color || kill.victim_team,
+      weapon: kill.weapon || 'unknown',
+      is_headshot: kill.headshot || kill.is_headshot || false,
+    })),
+  }));
+
+  return {
+    job_id: data.metadata?.vod_id || data.job_id || jobId,
+    filename: data.metadata?.filename || (data.filename as any) || 'vod.mp4',
+    duration_ms: data.metadata?.duration_ms || data.duration_ms || 0,
+    resolution: data.metadata?.resolution || [0, 0],
+    fps: data.metadata?.fps || data.fps || 30,
+    rounds: mappedRounds,
+    total_kills: data.metadata?.total_kills || data.total_kills || (Array.isArray(rounds) ? rounds.reduce((s: number, r: any) => s + (r.kills?.length || 0), 0) : 0),
+    match_info: {
+      left_team: leftTeam,
+      right_team: rightTeam,
+      map: data.metadata?.map || data.match_info?.map || 'Unknown Map',
+    },
+  } as TimelineData;
 }
 
 export async function downloadFile(jobId: string, fileType: 'timeline' | 'events' | 'summary'): Promise<void> {
