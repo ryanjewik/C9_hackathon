@@ -4,7 +4,8 @@ services:
   # ===========================================
   vod-frontend:
     build:
-      context: ./frontend
+      context: ./vod_frontend
+      dockerfile: Dockerfile
     image: vod-processor-frontend:latest
     container_name: vod-processor-frontend
     ports:
@@ -23,7 +24,8 @@ services:
   # ===========================================
   vod-api:
     build:
-      context: .
+      context: ./vod_processor
+      dockerfile: Dockerfile
       target: production
     image: vod-processor:latest
     container_name: vod-processor-api
@@ -35,7 +37,7 @@ services:
       - POSTGRES_PORT=5432
       - POSTGRES_DB=${POSTGRES_DB:-cloud9}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
       - REDIS_URL=redis://redis:6379/0
       - UPLOAD_DIR=/app/uploads
       - OUTPUT_DIR=/app/outputs
@@ -44,7 +46,7 @@ services:
     volumes:
       - vod_uploads:/app/uploads
       - vod_outputs:/app/outputs
-      - ./logs:/app/logs
+      - ./vod_processor/logs:/app/logs
     depends_on:
       - redis
       - postgres
@@ -68,7 +70,8 @@ services:
   # ===========================================
   vod-worker:
     build:
-      context: .
+      context: ./vod_processor
+      dockerfile: Dockerfile
       target: production
     image: vod-processor:latest
     container_name: vod-processor-worker
@@ -79,7 +82,7 @@ services:
       - POSTGRES_PORT=5432
       - POSTGRES_DB=${POSTGRES_DB:-cloud9}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
       - REDIS_URL=redis://redis:6379/0
       - UPLOAD_DIR=/app/uploads
       - OUTPUT_DIR=/app/outputs
@@ -93,15 +96,15 @@ services:
     volumes:
       - vod_uploads:/app/uploads
       - vod_outputs:/app/outputs
-      - ./logs:/app/logs
+      - ./vod_processor/logs:/app/logs
       # Mount test VOD files directly (no need to docker cp)
-      - ./match_vod.mp4:/app/uploads/match_vod.mp4:ro
-      - ./match_vod_2.mp4:/app/uploads/match_vod_2.mp4:ro
-      - ./match_vod_3.mp4:/app/uploads/match_vod_3.mp4:ro
+      - ./vod_processor/match_vod.mp4:/app/uploads/match_vod.mp4:ro
+      - ./vod_processor/match_vod_2.mp4:/app/uploads/match_vod_2.mp4:ro
+      - ./vod_processor/match_vod_3.mp4:/app/uploads/match_vod_3.mp4:ro
       # Mount source code for live development (no need to rebuild/copy)
-      - ./app:/app/app:ro
-      - ./config:/app/config:ro
-      - ../run_processing_db.py:/app/run_processing_db.py:ro
+      - ./vod_processor/app:/app/app:ro
+      - ./vod_processor/config:/app/config:ro
+      - ./run_processing_db.py:/app/run_processing_db.py:ro
     depends_on:
       - redis
       - postgres
@@ -142,14 +145,15 @@ services:
     environment:
       - POSTGRES_DB=${POSTGRES_DB:-cloud9}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_HOST_AUTH_METHOD=trust
     ports:
       - "5433:5432"  # Use 5433 to avoid conflicts with host postgres
     volumes:
       - postgres_data:/var/lib/postgresql/data
       # Mount restore script and backup file
-      - ./db_init/restore.sh:/docker-entrypoint-initdb.d/00-restore.sh:ro
-      - ../backup.sql:/docker-entrypoint-initdb.d/backup.sql:ro
+      - ./vod_processor/db_init/restore.sh:/docker-entrypoint-initdb.d/00-restore.sh:ro
+      - ./backup.sql:/docker-entrypoint-initdb.d/backup.sql:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
