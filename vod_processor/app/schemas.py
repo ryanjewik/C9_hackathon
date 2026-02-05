@@ -30,7 +30,13 @@ class JobResponse(BaseModel):
     message: Optional[str] = None
     created_at: datetime
     completed_at: Optional[datetime] = None
-    progress: Optional[float] = None
+    # Detailed progress info: processed frames, total frames, events detected
+    class ProgressInfo(BaseModel):
+        processed_frames: int = 0
+        total_frames: int = 0
+        events_detected: int = 0
+
+    progress: Optional[ProgressInfo] = None
     error: Optional[str] = None
 
 
