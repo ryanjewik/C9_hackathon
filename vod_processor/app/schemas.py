@@ -103,7 +103,7 @@ class MatchMetadata(BaseModel):
     duration_ms: float
     resolution: Optional[List[int]] = None
     fps: Optional[float] = None
-    map_name: Optional[str] = None
+    map: Optional[str] = None
     teams: List[str] = Field(default_factory=list)
     players: List[Dict[str, Any]] = Field(default_factory=list)
     total_rounds: Optional[int] = None
