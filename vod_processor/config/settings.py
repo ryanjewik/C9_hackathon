@@ -69,6 +69,10 @@ LEFT_PLAYER_Y = [0.505, 0.605, 0.705, 0.805, 0.905]
 RIGHT_PLAYER_Y = [0.505, 0.605, 0.705, 0.805, 0.905]
 
 ROI_CONFIG: Dict[str, Tuple[float, float, float, float]] = {
+    # Map indicator - series scoreboard in top-left showing "CURRENT: <MAP>"
+    # Shows: "LOTUS 13-6 | CURRENT: ABYSS | NEXT: ASCENT"
+    "map_indicator": (0.0, 0.0, 0.32, 0.025),
+    
     # Minimap
     "minimap": (0.016, 0.032, 0.250, 0.385),
 
