@@ -174,8 +174,8 @@ class VODProcessor:
         Returns:
             Dictionary with processing results
         """
-        from app.services.job_manager import JobManager
-        from app.services.db_player_matcher import DatabasePlayerMatcher
+        from vod_processor.app.services.io.job_manager import JobManager
+        from vod_processor.app.services.db.db_player_matcher import DatabasePlayerMatcher
         
         # Store team codes for use in team detection
         self._left_team_code = left_team
@@ -251,7 +251,7 @@ class VODProcessor:
                 # Load player pools from database for detected teams
                 if (self._left_team_code or self._right_team_code) and (not left_player_pool and not right_player_pool):
                     print(f"[{job_id}] Loading player pools from database for detected teams...")
-                    from app.services.db_player_matcher import load_match_players_from_db
+                    from vod_processor.app.services.db.db_player_matcher import load_match_players_from_db
                     try:
                         db_left_pool, db_right_pool = load_match_players_from_db(
                             self._left_team_code or "",
@@ -1299,7 +1299,7 @@ class VODProcessor:
             self._player_matcher.set_match_players(left, right)
             return
         
-        from app.services.player_name_extractor import PlayerNameExtractor
+        from vod_processor.app.services.ocr.player_name_extractor import PlayerNameExtractor
         
         extractor = PlayerNameExtractor()
         
@@ -1913,7 +1913,7 @@ class KillfeedDetector(BaseDetector):
         
         try:
             import os
-            from app.services.ocr_engine import get_ocr_engine
+            from vod_processor.app.services.ocr.ocr_engine import get_ocr_engine
             use_gpu = os.environ.get('USE_GPU', 'false').lower() == 'true'
             self._ocr_engine = get_ocr_engine(use_gpu=use_gpu)
             print(f"KillfeedDetector: Using OCR engine ({self._ocr_engine.backend}) with GPU={use_gpu}")

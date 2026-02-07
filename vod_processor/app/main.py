@@ -19,8 +19,8 @@ from app.schemas import (
     RoundEventsResponse,
     HealthResponse,
 )
-from app.services.job_manager import JobManager
-from app.services.vod_processor import VODProcessor
+from vod_processor.app.services.io.job_manager import JobManager
+from vod_processor.app.services.processing.vod_processor import VODProcessor
 from config import get_settings
 
 settings = get_settings()

@@ -6,7 +6,7 @@ import json
 
 sys.path.insert(0, '/app')
 
-from app.services.vod_processor import VODProcessor
+from vod_processor.app.services.processing.vod_processor import VODProcessor
 
 def main():
     processor = VODProcessor()

@@ -4,7 +4,7 @@ import sys
 import json
 sys.path.insert(0, '/app')
 
-from app.services.vod_processor import process_vod
+from vod_processor.app.services.processing.vod_processor import process_vod
 
 print("Starting full processing of match_vod_3.mp4...")
 print("=" * 60)

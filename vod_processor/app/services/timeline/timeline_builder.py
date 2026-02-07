@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
-from app.services.state_resolver import StateResolver, ResolvedEvent, EventType, GameState
+from vod_processor.app.services.state.state_resolver import StateResolver, ResolvedEvent, EventType, GameState
 
 
 @dataclass
