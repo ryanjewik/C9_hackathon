@@ -63,7 +63,7 @@ def process_vod_task(
         team_b: Team B name
         use_pipeline: If True, use the full pipeline (recommended)
     """
-    from app.services.job_manager import JobManager
+    from vod_processor.app.services.io.job_manager import JobManager
     
     job_manager = JobManager()
     
@@ -72,7 +72,7 @@ def process_vod_task(
     
     if use_pipeline:
         # Use the full architecture-compliant pipeline
-        from app.services.pipeline import VODPipeline
+        from vod_processor.app.services.processing.pipeline import VODPipeline
         
         # Get database connection string if available
         db_url = settings.database_url if hasattr(settings, 'database_url') else None
@@ -92,7 +92,7 @@ def process_vod_task(
         )
     else:
         # Use the basic VOD processor
-        from app.services.vod_processor import VODProcessor
+        from vod_processor.app.services.processing.vod_processor import VODProcessor
         
         processor = VODProcessor()
         processor.set_job_manager(job_manager)

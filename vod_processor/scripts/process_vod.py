@@ -10,8 +10,8 @@ import json
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.services.vod_processor import VODProcessor
-from app.services.job_manager import JobManager
+from vod_processor.app.services.processing.vod_processor import VODProcessor
+from vod_processor.app.services.io.job_manager import JobManager
 
 
 def main():

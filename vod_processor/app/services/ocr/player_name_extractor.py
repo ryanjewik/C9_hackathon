@@ -100,7 +100,7 @@ class PlayerNameExtractor:
             return
         
         try:
-            from app.services.ocr_engine import OCREngine
+            from vod_processor.app.services.ocr.ocr_engine import OCREngine
             self._ocr_engine = OCREngine()
             self._ocr_engine._lazy_init()
             print(f"PlayerNameExtractor: Using {self._ocr_engine.backend}")
