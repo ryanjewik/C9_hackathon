@@ -19,8 +19,8 @@ import cv2
 import numpy as np
 
 from app.schemas import JobStatus
-from app.services.frame_sampler import FrameSampler, Frame
-from app.services.vod_processor import (
+from vod_processor.app.services.processing.frame_sampler import FrameSampler, Frame
+from vod_processor.app.services.processing.vod_processor import (
     VODProcessor, 
     KillfeedDetector, 
     TopHUDDetector, 
@@ -29,11 +29,11 @@ from app.services.vod_processor import (
     roi_to_px,
     crop,
 )
-from app.services.state_resolver import StateResolver, EventType
-from app.services.timeline_builder import TimelineBuilder
-from app.services.database import EsportsDatabase
-from app.services.player_tracker import PlayerStateTracker
-from app.services.minimap_tracker import MinimapTracker as PositionTracker
+from vod_processor.app.services.state.state_resolver import StateResolver, EventType
+from vod_processor.app.services.timeline.timeline_builder import TimelineBuilder
+from vod_processor.app.services.db.database import EsportsDatabase
+from vod_processor.app.services.tracking.player_tracker import PlayerStateTracker
+from vod_processor.app.services.tracking.minimap_tracker import MinimapTracker as PositionTracker
 from config import get_settings, ROI_CONFIG, DETECTOR_FPS
 
 
@@ -118,7 +118,7 @@ class VODPipeline:
             
             # Initialize player matcher for killfeed team detection
             # Team A is typically left side (teal), Team B is right side (orange)
-            from app.services.player_name_extractor import DatabasePlayerMatcher
+            from vod_processor.app.services.ocr.player_name_extractor import DatabasePlayerMatcher
             player_matcher = DatabasePlayerMatcher()
             
             # Parse player list (handles "NRG:p1,p2;FNC:p3,p4" format)

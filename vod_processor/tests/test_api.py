@@ -56,7 +56,7 @@ class TestKillfeedDetector:
     
     def test_deduplication(self):
         """Test kill event deduplication."""
-        from app.services.vod_processor import KillfeedDetector
+        from vod_processor.app.services.processing.vod_processor import KillfeedDetector
         
         detector = KillfeedDetector("killfeed", 8.0)
         
@@ -91,7 +91,7 @@ class TestROIConfig:
     
     def test_roi_px_conversion(self):
         """Test ROI coordinate conversion."""
-        from app.services.vod_processor import roi_to_px
+        from vod_processor.app.services.processing.vod_processor import roi_to_px
         
         # Test with 1920x1080 resolution
         px = roi_to_px(1920, 1080, (0.5, 0.5, 0.25, 0.25))

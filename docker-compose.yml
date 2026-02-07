@@ -43,10 +43,12 @@ services:
       - OUTPUT_DIR=/app/outputs
       - MAX_UPLOAD_SIZE_MB=5000
       - USE_GPU=true
+      - PYTHONPATH=/app
     volumes:
       - vod_uploads:/app/uploads
       - vod_outputs:/app/outputs
       - ./vod_processor/logs:/app/logs
+      - ./vod_processor:/app/vod_processor:ro
     depends_on:
       - redis
       - postgres
@@ -87,6 +89,7 @@ services:
       - UPLOAD_DIR=/app/uploads
       - OUTPUT_DIR=/app/outputs
       - USE_GPU=true
+      - PYTHONPATH=/app
       # GPU configuration for PaddlePaddle
       - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_VISIBLE_DEVICES=all
@@ -104,6 +107,7 @@ services:
       # Mount source code for live development (no need to rebuild/copy)
       - ./vod_processor/app:/app/app:ro
       - ./vod_processor/config:/app/config:ro
+      - ./vod_processor:/app/vod_processor:ro
       - ./run_processing_db.py:/app/run_processing_db.py:ro
     depends_on:
       - redis
