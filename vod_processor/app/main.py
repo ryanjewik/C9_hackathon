@@ -186,19 +186,17 @@ async def get_job_status(job_id: str):
 @app.get("/api/v1/vod/{job_id}/timeline", response_model=TimelineResponse)
 async def get_timeline(job_id: str):
     """Get the generated timeline for a completed job."""
-    job = job_manager.get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    if job.status != JobStatus.COMPLETED:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Job not completed. Current status: {job.status}"
-        )
-    
-    # Load timeline from output file
+    # Load timeline from output file (allow access even if job not in memory)
     timeline_path = os.path.join(settings.output_dir, f"{job_id}_timeline.json")
     if not os.path.exists(timeline_path):
+        job = job_manager.get_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.status != JobStatus.COMPLETED:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Job not completed. Current status: {job.status}"
+            )
         raise HTTPException(status_code=404, detail="Timeline file not found")
     
     import json

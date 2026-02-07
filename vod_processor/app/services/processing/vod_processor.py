@@ -83,6 +83,7 @@ class VODProcessor:
         self._job_manager = None
         self._player_matcher = None
         self._round_winners = None  # Optional: list of team codes that won each round
+        self._detected_map = None  # Detected map name from broadcast (e.g., "ABYSS")
     
     def set_job_manager(self, job_manager):
         """Set the job manager for status updates."""
@@ -628,6 +629,7 @@ class VODProcessor:
                 "duration_ms": duration_ms,
                 "resolution": resolution,
                 "fps": fps,
+                "map": self._detected_map,
                 "teams": list(teams),
                 "players": [],
                 "total_rounds": total_rounds,
@@ -939,6 +941,7 @@ class VODProcessor:
                 headshots += 1
         
         return {
+            "map": self._detected_map,
             "total_kills": len(kill_events),
             "total_headshots": headshots,
             "kills_by_team": team_kills,
@@ -1320,6 +1323,41 @@ class VODProcessor:
         if not sample_frames:
             print("WARNING: No frames found for player extraction")
             return
+        
+        # Detect map from later in the video where the series scoreboard is visible
+        # The first 30 seconds often show intro/agent select without the series bar
+        try:
+            from vod_processor.app.services.state.map_detector import MapDetector
+            map_detector = MapDetector()
+            
+            # Sample frames from 2-5 minutes into the video for map detection
+            # This is when gameplay is happening and the series scoreboard is visible
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            map_sample_frames = []
+            start_frame = int(120 * fps)  # Start at 2 minutes
+            end_frame = min(int(300 * fps), total_frames - 1)  # End at 5 minutes or video end
+            map_sample_interval = int(fps * 10)  # Every 10 seconds
+            
+            for frame_idx in range(start_frame, end_frame, map_sample_interval):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                if ret:
+                    map_sample_frames.append(frame)
+            
+            if map_sample_frames:
+                print(f"[MapDetector] Sampling {len(map_sample_frames)} frames from t=120-300s for map detection")
+                detected_map = map_detector.detect_map_from_frames(map_sample_frames)
+                if detected_map:
+                    self._detected_map = detected_map
+                    print(f"Detected map: {detected_map}")
+                else:
+                    print("WARNING: Could not detect map from broadcast")
+            else:
+                print("WARNING: No frames available for map detection")
+        except Exception as e:
+            import traceback
+            print(f"WARNING: Map detection failed: {e}")
+            traceback.print_exc()
         
         # Extract players from sampled frames
         all_left_players = []
