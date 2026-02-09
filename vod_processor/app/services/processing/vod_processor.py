@@ -1518,15 +1518,19 @@ class FrameStateDetector:
     
     def _detect_replay_or_clutch_text(self, replay_roi: np.ndarray, t_ms: float = 0) -> bool:
         """
-        Detect if "REPLAY" or "CLUTCH" text is visible in the bottom-right corner.
-        Uses OCR to look for these overlay texts.
+        Detect if overlay text is visible in the bottom-right corner that indicates
+        we should skip killfeed processing.
         
-        Both REPLAY and CLUTCH overlays indicate segments where we should skip
-        killfeed processing to avoid duplicate detection:
+        Detected overlays:
         - REPLAY: Obviously replay footage
-        - CLUTCH: Often shown during replay highlights of clutch moments
+        - CLUTCH: Shown during replay highlights of clutch moments
+        - THRIFTY: Shown when a team wins while spending less money
+        - FLAWLESS: Shown when a team wins without anyone dying
         
-        Returns True if either REPLAY or CLUTCH text is detected.
+        All these overlays indicate segments where we should skip killfeed
+        processing to avoid duplicate detection during replays.
+        
+        Returns True if any overlay text is detected.
         """
         if replay_roi.size == 0:
             return False
@@ -1536,7 +1540,7 @@ class FrameStateDetector:
         # Look for high-contrast white text on dark background
         gray = cv2.cvtColor(replay_roi, cv2.COLOR_BGR2GRAY)
         
-        # The REPLAY/CLUTCH text is typically white/light on darker semi-transparent overlay
+        # The overlay text is typically white/light on darker semi-transparent background
         # Use adaptive threshold for better detection across varying backgrounds
         _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
         white_ratio = np.sum(thresh > 0) / thresh.size
@@ -1555,12 +1559,14 @@ class FrameStateDetector:
                     for text in results:
                         if isinstance(text, str):
                             text_upper = text.upper().replace(" ", "").replace("_", "")
+                            
                             # CLUTCH = skip to avoid replay duplicates
                             if "CLUTCH" in text_upper or "CLUT" in text_upper:
                                 if not self._last_replay_detection_logged:
                                     print(f"[FrameState] CLUTCH detected at t={t_ms/1000:.1f}s - entering REPLAY mode")
                                     self._last_replay_detection_logged = True
                                 return True
+                            
                             # REPLAY = replay footage, skip to avoid duplicates
                             # Also match common OCR errors: REPLA, REPIAY, REPALY
                             if "REPLAY" in text_upper or "REPLA" in text_upper or "REPIAY" in text_upper:
@@ -1568,6 +1574,21 @@ class FrameStateDetector:
                                     print(f"[FrameState] REPLAY detected at t={t_ms/1000:.1f}s - entering REPLAY mode")
                                     self._last_replay_detection_logged = True
                                 return True
+                            
+                            # THRIFTY = round win overlay, often followed by replay
+                            if "THRIFTY" in text_upper or "THRIFT" in text_upper:
+                                if not self._last_replay_detection_logged:
+                                    print(f"[FrameState] THRIFTY detected at t={t_ms/1000:.1f}s - entering REPLAY mode")
+                                    self._last_replay_detection_logged = True
+                                return True
+                            
+                            # FLAWLESS = round win overlay (no deaths), often followed by replay
+                            if "FLAWLESS" in text_upper or "FLAWLES" in text_upper:
+                                if not self._last_replay_detection_logged:
+                                    print(f"[FrameState] FLAWLESS detected at t={t_ms/1000:.1f}s - entering REPLAY mode")
+                                    self._last_replay_detection_logged = True
+                                return True
+                                
                 except Exception:
                     pass
         
