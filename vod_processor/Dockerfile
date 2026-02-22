@@ -5,7 +5,7 @@
 # Stage 1: Base with system dependencies
 # Use NVIDIA CUDA + cuDNN base for GPU support (PaddleOCR + Surya)
 # ============================================
-FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04 AS base
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -27,10 +27,10 @@ RUN apt-get update \
     && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
     && ln -sf /usr/bin/python3.11 /usr/bin/python \
     # Create CUDA/cuDNN symlinks required by PaddlePaddle (needs unversioned .so files)
-    && ln -sf /usr/lib/x86_64-linux-gnu/libcudnn.so.8 /usr/lib/x86_64-linux-gnu/libcudnn.so \
-    && ln -sf /usr/local/cuda-12.1/targets/x86_64-linux/lib/libcublas.so.12 /usr/local/cuda-12.1/targets/x86_64-linux/lib/libcublas.so \
-    && ln -sf /usr/local/cuda-12.1/targets/x86_64-linux/lib/libcublasLt.so.12 /usr/local/cuda-12.1/targets/x86_64-linux/lib/libcublasLt.so \
-    && echo "/usr/local/cuda-12.1/targets/x86_64-linux/lib" >> /etc/ld.so.conf.d/cuda.conf \
+    && ln -sf /usr/lib/x86_64-linux-gnu/libcudnn.so.9 /usr/lib/x86_64-linux-gnu/libcudnn.so \
+    && ln -sf /usr/local/cuda/lib64/libcublas.so.12 /usr/local/cuda/lib64/libcublas.so \
+    && ln -sf /usr/local/cuda/lib64/libcublasLt.so.12 /usr/local/cuda/lib64/libcublasLt.so \
+    && echo "/usr/local/cuda/lib64" >> /etc/ld.so.conf.d/cuda.conf \
     && ldconfig \
     && rm -rf /var/lib/apt/lists/*
 
@@ -47,6 +47,18 @@ COPY requirements.txt /app/requirements.txt
 # Install dependencies with pre-built wheels (much faster)
 RUN pip install --upgrade pip \
     && pip install --no-cache-dir -r /app/requirements.txt
+
+# Ensure PyTorch's bundled cuDNN (9.10.2) is found instead of system cuDNN (9.1.0)
+# The NVIDIA entrypoint injects LD_LIBRARY_PATH at runtime pointing to system cuDNN.
+# Solution: remove system cuDNN and symlink the pip-installed nvidia-cudnn-cu12 (9.10.2)
+# into the system lib dir so both PyTorch and PaddlePaddle find the right version.
+RUN rm -f /usr/lib/x86_64-linux-gnu/libcudnn* \
+    && for f in /usr/local/lib/python3.11/dist-packages/nvidia/cudnn/lib/libcudnn*.so*; do \
+         ln -sf "$f" /usr/lib/x86_64-linux-gnu/$(basename "$f"); \
+       done \
+    # PaddlePaddle needs the unversioned libcudnn.so
+    && ln -sf /usr/lib/x86_64-linux-gnu/libcudnn.so.9 /usr/lib/x86_64-linux-gnu/libcudnn.so \
+    && ldconfig
 
 # ============================================
 # Stage 3: Production image
@@ -66,7 +78,22 @@ COPY ./config /app/config
 RUN useradd --create-home --shell /bin/bash appuser \
     && mkdir -p /home/appuser/.cache/datalab/models \
     && chown -R appuser:appuser /app /home/appuser/.cache
-USER appuser
+# Note: USER appuser disabled because Docker volumes mount as root
+# and the container needs write access to uploads/outputs/logs
+
+# Pre-download OCR models so they don't re-download on every container start
+# PaddleOCR English models -> /root/.paddleocr/
+# EasyOCR English models -> /root/.EasyOCR/
+RUN python -c "\
+from paddleocr import PaddleOCR; \
+import numpy as np; \
+ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False, show_log=False); \
+print('[Dockerfile] PaddleOCR models downloaded'); \
+" && python -c "\
+import easyocr; \
+reader = easyocr.Reader(['en'], gpu=False, verbose=True); \
+print('[Dockerfile] EasyOCR models downloaded'); \
+"
 
 # Expose API port
 EXPOSE 8000
@@ -93,3 +120,21 @@ COPY . /app
 
 # Run with reload for development
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+# ============================================
+# Stage X: Crops stage for icon extraction
+# Reuses the dependencies stage (same packages as production)
+# ============================================
+FROM dependencies AS crops
+
+WORKDIR /app
+
+RUN mkdir -p /app/uploads /app/outputs /app/logs
+
+# Copy code needed to run the crop tool
+COPY tools /app/vod_processor/tools
+COPY app /app/app
+COPY config /app/config
+COPY . /app/vod_processor
+
+CMD ["/bin/bash"]

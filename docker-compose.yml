@@ -94,8 +94,6 @@ services:
       - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_VISIBLE_DEVICES=all
       - FLAGS_fraction_of_gpu_memory_to_use=0.8
-      # CUDA and cuDNN library paths (required for PaddlePaddle GPU)
-      - LD_LIBRARY_PATH=/usr/local/cuda-12.1/targets/x86_64-linux/lib:/usr/lib/x86_64-linux-gnu:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
     volumes:
       - vod_uploads:/app/uploads
       - vod_outputs:/app/outputs
@@ -109,6 +107,9 @@ services:
       - ./vod_processor/config:/app/config:ro
       - ./vod_processor:/app/vod_processor:ro
       - ./run_processing_db.py:/app/run_processing_db.py:ro
+      - ./run_all_vod_tests.py:/app/run_all_vod_tests.py:ro
+      # Mount valorant_resources so model + labels are available
+      - ../valorant_resources:/app/valorant_resources:ro
     depends_on:
       - redis
       - postgres
@@ -121,6 +122,36 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+
+  # One-off runner to extract and save killfeed crops (uses same image)
+  crops-runner:
+    image: vod-processor:latest
+    container_name: vod-processor-crops-runner
+    build:
+      context: ./vod_processor
+      dockerfile: Dockerfile
+      target: crops
+    command: ["/bin/bash", "-lc", "python /app/vod_processor/tools/save_killfeed_crops.py --video /app/uploads/match_vod.mp4 --out /app/outputs/crops --sample-rate 5 --max-crops 100 --debug --skip-seconds 420 --device cpu"]
+    environment:
+      - PYTHONUNBUFFERED=1
+      - UPLOAD_DIR=/app/uploads
+      - OUTPUT_DIR=/app/outputs
+      - USE_GPU=false
+      - DISABLE_OCR=true
+      - PYTHONPATH=/app
+    volumes:
+      - vod_uploads:/app/uploads
+      - ./vod_processor/outputs:/app/outputs
+      - ./vod_processor/logs:/app/logs
+      - ./vod_processor/match_vod.mp4:/app/uploads/match_vod.mp4:ro
+      - ../valorant_resources:/app/valorant_resources:ro
+      - ./vod_processor:/app/vod_processor:ro
+      - ./vod_processor/app:/app/app:ro
+      - ./vod_processor/config:/app/config:ro
+    depends_on:
+      - redis
+      - postgres
+    restart: "no"
 
   # ===========================================
   # Redis for Task Queue

@@ -18,15 +18,21 @@ from typing import List, Tuple, Optional, Dict
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
-# Initialize PaddlePaddle GPU device early to ensure cuDNN is loaded
-# This must happen BEFORE importing PaddleOCR
-try:
-    import paddle
-    if os.environ.get('USE_GPU', 'false').lower() == 'true':
-        paddle.device.set_device('gpu:0')
-        print(f"[OCR Engine] Pre-initialized PaddlePaddle on gpu:0", flush=True)
-except Exception as e:
-    print(f"[OCR Engine] Could not pre-initialize PaddlePaddle GPU: {e}", flush=True)
+# Allow callers to explicitly disable OCR backend initialization (useful for
+# lightweight crop-only runs). Set DISABLE_OCR=true in the environment to
+# skip any Paddle/Surya/EasyOCR imports and initialization.
+if os.environ.get('DISABLE_OCR', 'false').lower() == 'true':
+    print("[OCR Engine] DISABLE_OCR=true, skipping OCR backend initialization", flush=True)
+else:
+    # Initialize PaddlePaddle GPU device early to ensure cuDNN is loaded
+    # This must happen BEFORE importing PaddleOCR
+    try:
+        import paddle
+        if os.environ.get('USE_GPU', 'false').lower() == 'true':
+            paddle.device.set_device('gpu:0')
+            print(f"[OCR Engine] Pre-initialized PaddlePaddle on gpu:0", flush=True)
+    except Exception as e:
+        print(f"[OCR Engine] Could not pre-initialize PaddlePaddle GPU: {e}", flush=True)
 
 
 @dataclass
@@ -82,6 +88,12 @@ class OCREngine:
             
         self._initialized = True
         
+        # If OCR has been globally disabled via environment, skip init.
+        if os.environ.get('DISABLE_OCR', 'false').lower() == 'true':
+            self._backend = None
+            print("[OCR Engine] Skipping backend initialization (DISABLE_OCR=true)", flush=True)
+            return
+
         # Try PaddleOCR first (fast + accurate balance)
         # GPU mode with CUDA/cuDNN library symlinks configured in Dockerfile
         if self.prefer_paddle:
@@ -89,7 +101,7 @@ class OCREngine:
                 from paddleocr import PaddleOCR
                 import logging
                 # Suppress PaddleOCR logging
-                logging.getLogger('ppocr').setLevel(logging.WARNING)
+                logging.getLogger('ppocr').setLevel(logging.ERROR)
                 
                 # Use GPU mode - CUDA/cuDNN symlinks configured in container
                 use_gpu_paddle = self.use_gpu and os.environ.get('USE_GPU', 'false').lower() == 'true'

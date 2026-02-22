@@ -10,7 +10,7 @@ from datetime import datetime
 # Add app to path
 sys.path.insert(0, '/app')
 
-from app.services.vod_processor import VODProcessor
+from app.services.processing.vod_processor import VODProcessor
 
 
 # Expected stats from screenshots (K/D for each player)
