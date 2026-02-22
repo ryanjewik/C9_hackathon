@@ -7,14 +7,14 @@ python-multipart==0.0.6
 numpy>=1.24.0,<2.0.0
 
 # OCR - Surya requires PyTorch 2.7+
-# Use CUDA 12.1 compatible PyTorch (latest available)
---extra-index-url https://download.pytorch.org/whl/cu121
+# Use CUDA 12.4 compatible PyTorch
+--extra-index-url https://download.pytorch.org/whl/cu124
 torch>=2.7.0
 torchvision>=0.22.0
 
 # Surya OCR - Primary engine (state-of-art for scene text)
 surya-ocr>=0.17.0
-# Pin transformers to <5.0 for Surya compatibility
+# Pin transformers for Surya compatibility
 transformers>=4.36.0,<5.0.0
 
 # EasyOCR - Fallback engine
@@ -51,3 +51,7 @@ filterpy==1.4.5
 scipy>=1.11.0
 
 requests
+
+# Additional runtime imaging deps for crop extraction and classification
+opencv-python-headless==4.11.0.86
+Pillow>=10.2.0,<11.0.0
