@@ -1,0 +1,43 @@
+# Exclude Python virtual environments
+.venv
+venv
+env/
+
+# Byte-compiled / caches
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Git
+.git
+.gitignore
+
+# Editor configs
+.vscode/
+.idea/
+
+# Node
+node_modules/
+
+# Build / output
+outputs/
+build/
+dist/
+tmp/
+
+# Large media and model files
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.pth
+*.pt
+*.zip
+*.tar.gz
+
+# Docker and local environment
+Dockerfile*
+docker-compose*.yml
+
+# Python test / cache
+.pytest_cache/

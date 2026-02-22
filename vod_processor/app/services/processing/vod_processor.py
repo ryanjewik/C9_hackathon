@@ -230,8 +230,11 @@ class VODProcessor:
                 self._job_manager.update_job_status(
                     job_id, JobStatus.PROCESSING, "Detecting team tags from HUD..."
                 )
+                left_candidates = []
+                right_candidates = []
                 try:
-                    detected_left, detected_right = self._detect_team_tags_from_hud(cap, fps)
+                    detected_left, detected_right, left_candidates, right_candidates = \
+                        self._detect_team_tags_from_hud(cap, fps)
                     print(f"[{job_id}] Team detection returned: left={detected_left!r}, right={detected_right!r}")
                 except Exception as e:
                     print(f"[{job_id}] Team detection FAILED with exception: {e}")
@@ -270,6 +273,15 @@ class VODProcessor:
                     except Exception as e:
                         print(f"[{job_id}] Failed to load player pools from DB: {e}")
                 
+                # --- Player-name validation: if detected team's player pool
+                #     doesn't overlap with the names from the HUD, try the next
+                #     best candidate tag (handles TL-vs-IL style ambiguity). ---
+                self._validate_team_via_players(
+                    job_id, cap, fps, left_candidates, right_candidates
+                )
+                left_player_pool = self._left_player_pool
+                right_player_pool = self._right_player_pool
+                
                 # Reset video position after team detection
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             
@@ -301,6 +313,13 @@ class VODProcessor:
                     killfeed_detector = d
                 if isinstance(d, TopHUDDetector):
                     top_hud_detector = d
+            
+            # Enable crop saving on killfeed detector so icons are written to disk
+            if killfeed_detector:
+                crops_dir = os.path.join(output_dir, "crops")
+                os.makedirs(crops_dir, exist_ok=True)
+                killfeed_detector._crop_output_dir = crops_dir
+                print(f"[{job_id}] Weapon icon crops will be saved to {crops_dir}")
             
             # Connect TopHUD halftime detection to KillfeedDetector
             if top_hud_detector and killfeed_detector:
@@ -842,7 +861,7 @@ class VODProcessor:
         (kills + deaths combined). A player with only 1-2 appearances is likely an
         OCR error that coincidentally matched a roster name.
         
-        We filter conservatively: only remove if player has ≤2 total appearances
+        We filter conservatively: only remove if player has â‰¤2 total appearances
         AND the player is ONLY a victim (never got a kill themselves).
         """
         from collections import defaultdict
@@ -860,7 +879,7 @@ class VODProcessor:
                 if victim and victim != "Unknown":
                     death_counts[victim] += 1
         
-        # Identify ghost players: ≤2 total appearances AND only as victim (0 kills)
+        # Identify ghost players: â‰¤2 total appearances AND only as victim (0 kills)
         ghost_players = set()
         for player in set(kill_counts.keys()) | set(death_counts.keys()):
             total_appearances = kill_counts[player] + death_counts[player]
@@ -953,10 +972,13 @@ class VODProcessor:
         self,
         cap: cv2.VideoCapture,
         fps: float,
-    ) -> Tuple[Optional[str], Optional[str]]:
+    ) -> Tuple[Optional[str], Optional[str], list, list]:
         """
         Detect team tags from the top HUD by OCR-ing the team tag regions.
-        Returns (left_team_tag, right_team_tag) or (None, None) if detection fails.
+        Returns (left_team_tag, right_team_tag, left_candidates, right_candidates).
+        
+        *_candidates are lists of (tag, score) tuples ranked by score for
+        player-name validation fallback.
         
         IMPROVED: First finds frames with valid game score (0-0 or higher) to ensure
         we're sampling during actual gameplay, not intro/lobby screens.
@@ -1038,6 +1060,38 @@ class VODProcessor:
                 print(f"  t={t_sec}s: score {ls}-{rs}")
         
         # STEP 2: OCR team tags from valid gameplay frames
+        # Initialize PaddleOCR separately for a second opinion
+        # get_ocr_engine() uses lazy init — we must trigger it before
+        # accessing the internal _paddleocr_reader.
+        paddle_ocr = None
+        try:
+            from app.services.ocr.ocr_engine import get_ocr_engine
+            engine = get_ocr_engine()
+            engine._lazy_init()  # Ensure backends are initialized
+            paddle_ocr = getattr(engine, '_paddleocr_reader', None)
+            # Suppress "angle classifier is not initialized" warnings
+            import logging
+            logging.getLogger('ppocr').setLevel(logging.ERROR)
+            if paddle_ocr is not None:
+                print(f"[TeamTagDetector] PaddleOCR raw reader acquired for second opinion")
+            else:
+                # Fallback: initialize PaddleOCR directly
+                try:
+                    from paddleocr import PaddleOCR
+                    logging.getLogger('ppocr').setLevel(logging.ERROR)
+                    use_gpu_paddle = os.environ.get('USE_GPU', 'false').lower() == 'true'
+                    paddle_ocr = PaddleOCR(
+                        use_angle_cls=True,
+                        lang='en',
+                        use_gpu=use_gpu_paddle,
+                        show_log=False,
+                    )
+                    print(f"[TeamTagDetector] PaddleOCR initialized directly (GPU={use_gpu_paddle})")
+                except Exception as e2:
+                    print(f"[TeamTagDetector] PaddleOCR direct init failed: {e2}")
+        except Exception as e:
+            print(f"[TeamTagDetector] PaddleOCR not available: {e}")
+        
         left_detections = []
         right_detections = []
         
@@ -1052,13 +1106,27 @@ class VODProcessor:
             left_tag = self._ocr_team_tag_enhanced(left_img, ocr_reader)
             if left_tag:
                 left_detections.append(left_tag)
-                print(f"[TeamTagDetector] t={t_sec}s: left='{left_tag}'")
+                print(f"[TeamTagDetector] t={t_sec}s: left='{left_tag}' (easyocr)")
             
             right_img = crop(frame, right_tag_px)
             right_tag = self._ocr_team_tag_enhanced(right_img, ocr_reader)
             if right_tag:
                 right_detections.append(right_tag)
-                print(f"[TeamTagDetector] t={t_sec}s: right='{right_tag}'")
+                print(f"[TeamTagDetector] t={t_sec}s: right='{right_tag}' (easyocr)")
+            
+            # PaddleOCR pass — different engine often reads differently
+            if paddle_ocr is not None:
+                for side, img, detections in [
+                    ('left', left_img, left_detections),
+                    ('right', right_img, right_detections),
+                ]:
+                    try:
+                        tag = self._ocr_team_tag_paddle(img, paddle_ocr)
+                        if tag:
+                            detections.append(tag)
+                            print(f"[TeamTagDetector] t={t_sec}s: {side}='{tag}' (paddleocr)")
+                    except Exception:
+                        pass
         
         # Restore original position
         cap.set(cv2.CAP_PROP_POS_FRAMES, original_pos)
@@ -1081,7 +1149,325 @@ class VODProcessor:
         else:
             print(f"[TeamTagDetector] No right team detections!")
         
-        return left_team, right_team
+        # --- Post-OCR correction: match against known team tags from DB ---
+        known_tags = self._get_known_team_tags()
+        left_candidates = []
+        right_candidates = []
+        if known_tags:
+            print(f"[TeamTagDetector] Loaded {len(known_tags)} known team tags from DB for validation")
+            if left_detections:
+                left_candidates = self._resolve_tag_from_detections(left_detections, known_tags, return_ranked=True)
+                if left_candidates:
+                    corrected = left_candidates[0][0]
+                    if corrected != left_team:
+                        print(f"[TeamTagDetector] Left team corrected: '{left_team}' -> '{corrected}'")
+                        left_team = corrected
+            if right_detections:
+                right_candidates = self._resolve_tag_from_detections(right_detections, known_tags, return_ranked=True)
+                if right_candidates:
+                    corrected = right_candidates[0][0]
+                    if corrected != right_team:
+                        print(f"[TeamTagDetector] Right team corrected: '{right_team}' -> '{corrected}'")
+                        right_team = corrected
+        
+        return left_team, right_team, left_candidates, right_candidates
+    
+    def _validate_team_via_players(
+        self,
+        job_id: str,
+        cap: cv2.VideoCapture,
+        fps: float,
+        left_candidates: list,
+        right_candidates: list,
+    ):
+        """Validate detected teams by extracting HUD player names and checking
+        against each candidate team's player pool from the database.
+        
+        If the current best-pick team has NO player overlap but an alternative
+        candidate does, switch to the alternative.  This handles OCR confusion
+        cases like TL/IL/1L where the wrong real team may outscore the correct
+        one in character-level voting.
+        """
+        from vod_processor.app.services.db.db_player_matcher import load_match_players_from_db
+        
+        # Quick extraction of HUD player names for validation
+        # We'll do a lightweight scan: grab one frame, read the 5 player-name
+        # slots on each side and compare against candidate team rosters.
+        
+        # We need the existing player pools (already loaded for best picks)
+        left_pool = self._left_player_pool or []
+        right_pool = self._right_player_pool or []
+        
+        # Only validate sides that have close candidates (score gap < 15%)
+        sides_to_check = []
+        for side, candidates, pool, code_attr in [
+            ('left', left_candidates, left_pool, '_left_team_code'),
+            ('right', right_candidates, right_pool, '_right_team_code'),
+        ]:
+            if len(candidates) < 2:
+                continue
+            best_score = candidates[0][1]
+            runner_up_score = candidates[1][1]
+            if best_score <= 0:
+                continue
+            gap_pct = (best_score - runner_up_score) / best_score
+            if gap_pct < 0.20:  # Top two are within 20%
+                sides_to_check.append((side, candidates, pool, code_attr))
+                print(f"[TeamValidation] {side} team ambiguous — "
+                      f"top={candidates[0][0]}({best_score:.1f}) vs "
+                      f"runner={candidates[1][0]}({runner_up_score:.1f}), "
+                      f"gap={gap_pct:.0%}")
+        
+        if not sides_to_check:
+            return  # All picks are confident enough
+        
+        # Extract player names from HUD (lightweight: just 3 frames)
+        hud_names = self._quick_extract_hud_names(cap, fps)
+        if not hud_names['left'] and not hud_names['right']:
+            print("[TeamValidation] Could not extract any HUD names, skipping validation")
+            return
+        
+        print(f"[TeamValidation] HUD names — left: {hud_names['left']}, right: {hud_names['right']}")
+        
+        for side, candidates, pool, code_attr in sides_to_check:
+            current_tag = candidates[0][0]
+            side_names = hud_names.get(side, [])
+            if not side_names:
+                continue
+            
+            # Check how many HUD names match each candidate's roster
+            best_match_count = 0
+            best_match_tag = current_tag
+            
+            for tag, score in candidates[:5]:  # Check top 5 candidates
+                try:
+                    if side == 'left':
+                        tag_pool, _ = load_match_players_from_db(tag, "")
+                    else:
+                        _, tag_pool = load_match_players_from_db("", tag)
+                except Exception:
+                    tag_pool = []
+                
+                if not tag_pool:
+                    continue
+                
+                # Count fuzzy matches (case-insensitive substring)
+                tag_pool_lower = [p.lower() for p in tag_pool]
+                match_count = 0
+                for name in side_names:
+                    name_lower = name.lower()
+                    for pool_name in tag_pool_lower:
+                        if name_lower == pool_name or name_lower in pool_name or pool_name in name_lower:
+                            match_count += 1
+                            break
+                
+                print(f"[TeamValidation] {side} candidate '{tag}': "
+                      f"{match_count}/{len(side_names)} names match "
+                      f"({len(tag_pool)} players in roster)")
+                
+                if match_count > best_match_count:
+                    best_match_count = match_count
+                    best_match_tag = tag
+            
+            if best_match_tag != current_tag and best_match_count > 0:
+                print(f"[TeamValidation] {side} team CORRECTED: "
+                      f"'{current_tag}' -> '{best_match_tag}' "
+                      f"(player overlap: {best_match_count}/{len(side_names)})")
+                
+                # Update team code and player pool
+                setattr(self, code_attr, best_match_tag)
+                setattr(self._player_matcher, code_attr, best_match_tag)
+                
+                # Reload player pool for corrected team
+                try:
+                    if side == 'left':
+                        new_pool, _ = load_match_players_from_db(best_match_tag, "")
+                        self._left_player_pool = new_pool or []
+                        print(f"[{job_id}] Reloaded {len(self._left_player_pool)} players for {best_match_tag}")
+                    else:
+                        _, new_pool = load_match_players_from_db("", best_match_tag)
+                        self._right_player_pool = new_pool or []
+                        print(f"[{job_id}] Reloaded {len(self._right_player_pool)} players for {best_match_tag}")
+                except Exception as e:
+                    print(f"[TeamValidation] Failed to reload pool for '{best_match_tag}': {e}")
+    
+    def _quick_extract_hud_names(
+        self, cap: cv2.VideoCapture, fps: float
+    ) -> Dict[str, List[str]]:
+        """Extract player names from the HUD player card slots.
+        
+        Lightweight: samples just 3 gameplay frames and OCRs the 5 player
+        name slots on each side.  Returns {'left': [...], 'right': [...]}.
+        """
+        from config.settings import ROI_CONFIG
+        
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        original_pos = cap.get(cv2.CAP_PROP_POS_FRAMES)
+        
+        # Grab frames at gameplay timestamps (3-5 min in)
+        sample_times = [180, 240, 300]
+        
+        left_names = set()
+        right_names = set()
+        
+        try:
+            import easyocr
+            ocr = easyocr.Reader(['en'], gpu=True, verbose=False)
+        except Exception:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, original_pos)
+            return {'left': [], 'right': []}
+        
+        # Player name slot ROIs (5 per side)
+        left_slot_rois = [ROI_CONFIG.get(f"left_player_{i}") for i in range(1, 6)]
+        right_slot_rois = [ROI_CONFIG.get(f"right_player_{i}") for i in range(1, 6)]
+        
+        # Filter out None ROIs
+        left_slot_rois = [r for r in left_slot_rois if r]
+        right_slot_rois = [r for r in right_slot_rois if r]
+        
+        if not left_slot_rois and not right_slot_rois:
+            # Try the bottom HUD player name regions
+            bottom_left_rois = [ROI_CONFIG.get(f"bottom_left_player_{i}") for i in range(1, 6)]
+            bottom_right_rois = [ROI_CONFIG.get(f"bottom_right_player_{i}") for i in range(1, 6)]
+            left_slot_rois = [r for r in bottom_left_rois if r]
+            right_slot_rois = [r for r in bottom_right_rois if r]
+        
+        for t_sec in sample_times:
+            frame_num = int(t_sec * fps)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            
+            for roi in left_slot_rois:
+                px = roi_to_px(frame_width, frame_height, roi)
+                slot_img = crop(frame, px)
+                if slot_img is not None and slot_img.size > 0:
+                    try:
+                        results = ocr.readtext(slot_img, allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789')
+                        for r in results:
+                            if r and len(r) >= 3 and r[2] >= 0.4 and len(r[1].strip()) >= 2:
+                                left_names.add(r[1].strip())
+                    except Exception:
+                        pass
+            
+            for roi in right_slot_rois:
+                px = roi_to_px(frame_width, frame_height, roi)
+                slot_img = crop(frame, px)
+                if slot_img is not None and slot_img.size > 0:
+                    try:
+                        results = ocr.readtext(slot_img, allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789')
+                        for r in results:
+                            if r and len(r) >= 3 and r[2] >= 0.4 and len(r[1].strip()) >= 2:
+                                right_names.add(r[1].strip())
+                    except Exception:
+                        pass
+        
+        cap.set(cv2.CAP_PROP_POS_FRAMES, original_pos)
+        return {'left': list(left_names), 'right': list(right_names)}
+    
+    def _get_known_team_tags(self) -> List[str]:
+        """Query all known team tags from the esports_teams database table."""
+        try:
+            import psycopg2
+            host = os.environ.get('POSTGRES_HOST', 'localhost')
+            if host == 'postgres':
+                host = 'host.docker.internal'
+            conn = psycopg2.connect(
+                host=host,
+                port=int(os.environ.get('POSTGRES_PORT', 5432)),
+                user=os.environ.get('POSTGRES_USER', 'postgres'),
+                password=os.environ.get('POSTGRES_PASSWORD', ''),
+                dbname=os.environ.get('POSTGRES_DB', 'cloud9'),
+            )
+            cur = conn.cursor()
+            cur.execute("SELECT DISTINCT UPPER(team_tag) FROM esports_teams WHERE team_tag IS NOT NULL AND team_tag != ''")
+            tags = [row[0] for row in cur.fetchall()]
+            cur.close()
+            conn.close()
+            return tags
+        except Exception as e:
+            print(f"[TeamTagDetector] Could not load known team tags from DB: {e}")
+            return []
+    
+    # OCR confusion groups — characters that look similar in small HUD fonts
+    _CONFUSION_GROUPS = [
+        {'T', '1', 'I', '7'},   # thin vertical stroke (NOT L — L has a foot)
+        {'L', '1', 'I'},         # L can look like 1/I but less like T
+        {'O', '0', 'D', 'Q'},
+        {'S', '5'},
+        {'B', '8'},
+        {'G', '6'},
+        {'Z', '2'},
+        {'U', 'V'},
+    ]
+    
+    @staticmethod
+    def _chars_confusable(a: str, b: str) -> bool:
+        """Check if two characters are commonly confused by OCR."""
+        if a == b:
+            return True
+        for group in VODProcessor._CONFUSION_GROUPS:
+            if a in group and b in group:
+                return True
+        return False
+    
+    def _resolve_tag_from_detections(
+        self, raw_detections: List[str], known_tags: List[str],
+        return_ranked: bool = False
+    ) -> Optional[str]:
+        """
+        Given all per-frame raw OCR detections and a list of known DB tags,
+        vote for the best known tag using confusion-aware matching.
+        
+        Each raw detection votes for every known tag it could be (all chars
+        exact or confusable). Votes are weighted: exact char matches score
+        higher than confusable matches, so 'TL' voting for known 'TL' beats
+        '1L' voting for known 'TL'. This correctly distinguishes T1 vs TL
+        even when OCR reads '11' or '1L'.
+        
+        If return_ranked=True, returns list of (tag, score) tuples sorted
+        descending.  Otherwise returns the best tag string.
+        """
+        from collections import Counter
+        
+        # Tally weighted votes for each known tag
+        tag_scores: Dict[str, float] = {}
+        
+        for raw in raw_detections:
+            raw_upper = raw.upper()
+            for known in known_tags:
+                if len(known) != len(raw_upper):
+                    continue
+                
+                # Check if every character is exact or confusable
+                all_match = True
+                exact_count = 0
+                for a, b in zip(raw_upper, known):
+                    if a == b:
+                        exact_count += 1
+                    elif not self._chars_confusable(a, b):
+                        all_match = False
+                        break
+                
+                if all_match:
+                    score = exact_count + (len(raw_upper) - exact_count) * 0.5
+                    tag_scores[known] = tag_scores.get(known, 0) + score
+        
+        if not tag_scores:
+            counter = Counter(raw_detections)
+            raw_best = counter.most_common(1)[0][0] if counter else None
+            if return_ranked:
+                return [(raw_best, 0.0)] if raw_best else []
+            return raw_best
+        
+        sorted_scores = sorted(tag_scores.items(), key=lambda x: x[1], reverse=True)
+        print(f"[TeamTagDetector] Tag candidates: {sorted_scores[:5]}")
+        
+        if return_ranked:
+            return sorted_scores
+        return sorted_scores[0][0]
     
     def _ocr_single_digit(self, img: np.ndarray, ocr_reader) -> Optional[int]:
         """OCR a single digit/number from a score region."""
@@ -1099,116 +1485,219 @@ class VODProcessor:
         return None
     
     def _ocr_team_tag_enhanced(self, img: np.ndarray, ocr_reader) -> Optional[str]:
-        """OCR a team tag with enhanced preprocessing for small white text."""
+        """OCR a team tag with enhanced preprocessing for small white text.
+
+        Uses multiple preprocessing pipelines and both EasyOCR and PaddleOCR
+        for consensus. Sharpening and morphological dilation help distinguish
+        chars like T/1/I that share a thin vertical stroke.
+        """
+        import re
+
+        if img is None or img.size == 0:
+            return None
+
+        try:
+            # Upscale to help OCR on small fonts
+            scale = 4
+            scaled = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+            # Grayscale + CLAHE for all derived variants
+            gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            enhanced = clahe.apply(gray)
+
+            preprocessed_images = []
+
+            # 1) Color-scaled copy
+            preprocessed_images.append(scaled)
+
+            # 2) CLAHE enhanced
+            enhanced_bgr = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+            preprocessed_images.append(enhanced_bgr)
+
+            # 3) Otsu threshold
+            _, th = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            th_bgr = cv2.cvtColor(th, cv2.COLOR_GRAY2BGR)
+            preprocessed_images.append(th_bgr)
+
+            # 4) Sharpened — helps preserve horizontal strokes (T vs 1)
+            sharpen_kernel = np.array([[-1, -1, -1],
+                                       [-1,  9, -1],
+                                       [-1, -1, -1]], dtype=np.float32)
+            sharpened = cv2.filter2D(scaled, -1, sharpen_kernel)
+            preprocessed_images.append(sharpened)
+
+            # 5) Dilated threshold — thickens strokes so T's crossbar is visible
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+            dilated = cv2.dilate(th, kernel, iterations=1)
+            dilated_bgr = cv2.cvtColor(dilated, cv2.COLOR_GRAY2BGR)
+            preprocessed_images.append(dilated_bgr)
+
+            # 6) Horizontal morphological close — reconnects T crossbar that
+            #    thresholding may break, then dilate to thicken
+            kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 1))
+            h_closed = cv2.morphologyEx(th, cv2.MORPH_CLOSE, kernel_h)
+            h_closed_bgr = cv2.cvtColor(h_closed, cv2.COLOR_GRAY2BGR)
+            preprocessed_images.append(h_closed_bgr)
+
+            results = []
+
+            # --- EasyOCR pass ---
+            for img_version in preprocessed_images:
+                try:
+                    ocr_results = ocr_reader.readtext(
+                        img_version,
+                        allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+                        paragraph=False,
+                        min_size=5,
+                        detail=1,
+                    )
+                except Exception:
+                    ocr_results = []
+
+                for entry in ocr_results:
+                    if not entry:
+                        continue
+                    if isinstance(entry, tuple) and len(entry) >= 3:
+                        text = str(entry[1]).upper().strip()
+                        conf = float(entry[2]) if entry[2] is not None else 0.0
+                    else:
+                        text = str(entry).upper().strip()
+                        conf = 0.0
+                    if text:
+                        clean = re.sub(r'[^A-Z0-9]', '', text)
+                        if 1 < len(clean) <= 6:
+                            results.append((clean, conf, "easyocr"))
+
+            # --- PaddleOCR pass (second opinion via det=False) ---
+            try:
+                from app.services.ocr.ocr_engine import get_ocr_engine
+                engine = get_ocr_engine()
+                engine._lazy_init()
+                paddle_reader = getattr(engine, '_paddleocr_reader', None)
+                if paddle_reader is not None:
+                    # Also add horizontal-closed variant for T crossbar
+                    kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 1))
+                    h_closed = cv2.morphologyEx(th, cv2.MORPH_CLOSE, kernel_h)
+                    h_closed_bgr = cv2.cvtColor(h_closed, cv2.COLOR_GRAY2BGR)
+                    
+                    for img_version in [sharpened, th_bgr, dilated_bgr, h_closed_bgr]:
+                        try:
+                            # det=False: skip detection, run recognition on whole crop
+                            paddle_results = paddle_reader.ocr(img_version, det=False, cls=True)
+                            if paddle_results and paddle_results[0]:
+                                for item in paddle_results[0]:
+                                    if item and len(item) >= 2:
+                                        text = str(item[0]).upper().strip()
+                                        conf = float(item[1]) if item[1] is not None else 0.0
+                                        clean = re.sub(r'[^A-Z0-9]', '', text)
+                                        if 1 < len(clean) <= 6:
+                                            results.append((clean, conf, "paddleocr"))
+                        except Exception:
+                            continue
+            except Exception:
+                pass  # PaddleOCR not available or failed, continue with EasyOCR results
+
+            if not results:
+                return None
+
+            # Return highest-confidence result (require modest confidence)
+            results.sort(key=lambda x: x[1], reverse=True)
+            best, best_conf, best_engine = results[0]
+            if best_conf >= 0.35 or len(best) <= 3:
+                return best
+            return None
+        except Exception:
+            return None
+
+    def _ocr_team_tag_paddle(self, img: np.ndarray, paddle_ocr) -> Optional[str]:
+        """OCR a team tag using PaddleOCR with preprocessing tuned for small white text.
+        
+        Adds black padding around the crop so PaddleOCR's recognition model
+        has border context and doesn't lose edge characters.  Tries both
+        det=False (recognition-only) and det=True (full pipeline) on the
+        6×-upscaled, padded image.
+        """
         import re
         
         if img is None or img.size == 0:
             return None
         
-        # Scale up significantly for small text (team tags are ~30px tall)
-        # Use scale 6x - testing showed this gives best results (91.7% conf for DRX)
-        scale = 6
-        scaled = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-        
-        # Convert to grayscale
-        if len(scaled.shape) == 3:
-            gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = scaled
-        
-        # Multiple preprocessing approaches - prioritize approaches that work best
-        preprocessed_images = []
-        
-        # 1. Original scaled color (BEST for DRX detection - 91.7% conf)
-        # EasyOCR handles color well and this avoids D->O threshold errors
-        preprocessed_images.append(scaled)
-        
-        # 2. CLAHE (Contrast Limited Adaptive Histogram Equalization)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        enhanced = clahe.apply(gray)
-        preprocessed_images.append(enhanced)
-        
-        # 3. Grayscale only (no threshold to avoid D->O errors)
-        preprocessed_images.append(gray)
-        
-        # NOTE: Removed threshold-based approaches as they cause D->O misreads
-        # (threshold makes 'D' look like 'O' by filling in the curve)
-        
-        results = []
-        
-        # Known team tags for fuzzy matching
-        known_tags = {'NRG', 'FNC', 'SEN', 'C9', 'TL', 'TSM', '100T', 'G2', 'VIT', 
-                     'FUT', 'LEV', 'KRU', 'LOUD', 'PRX', 'DRX', 'T1', 'GEN', 'EDG',
-                     'FPX', 'TH', 'KC', 'BBL', 'FUR', 'MIBR', 'NIP', 'EG', 'FNATIC',
-                     'SENTINELS', 'CLOUD9', 'GENG', 'HERETICS', 'PAPER', 'REX'}
-        
-        for img_version in preprocessed_images:
-            try:
-                # Use EasyOCR with allowlist for uppercase letters and numbers
-                ocr_results = ocr_reader.readtext(
-                    img_version, 
-                    allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
-                    paragraph=False,
-                    min_size=5
-                )
-                for bbox, text, conf in ocr_results:
-                    if text and conf >= 0.3:
-                        clean = text.upper().strip()
-                        results.append((clean, conf))
-            except Exception as e:
-                pass
-        
-        if not results:
+        try:
+            scale = 6
+            scaled = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            
+            # --- Add black padding (30px each side) so edge chars aren't clipped ---
+            pad = 30
+            padded = cv2.copyMakeBorder(scaled, pad, pad, pad, pad,
+                                        cv2.BORDER_CONSTANT, value=(0, 0, 0))
+            
+            # Sharpen to preserve horizontal strokes (T crossbar)
+            sharpen_kernel = np.array([[-1, -1, -1],
+                                       [-1,  9, -1],
+                                       [-1, -1, -1]], dtype=np.float32)
+            sharpened = cv2.filter2D(padded, -1, sharpen_kernel)
+            
+            # Grayscale + high-contrast threshold
+            gray = cv2.cvtColor(sharpened, cv2.COLOR_BGR2GRAY)
+            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            
+            # Dilate slightly to thicken strokes
+            kernel_sq = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+            dilated = cv2.dilate(thresh, kernel_sq, iterations=1)
+            dilated_bgr = cv2.cvtColor(dilated, cv2.COLOR_GRAY2BGR)
+            
+            # Horizontal-emphasis: close with wide kernel to preserve T crossbar
+            kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 1))
+            h_closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_h)
+            h_closed_bgr = cv2.cvtColor(h_closed, cv2.COLOR_GRAY2BGR)
+            
+            best_text = None
+            best_conf = 0.0
+            
+            variant_names = ['sharp', 'dilated', 'h_closed']
+            variants = [sharpened, dilated_bgr, h_closed_bgr]
+            
+            # Pass A: det=False (recognition-only on whole image)
+            for vi, variant in enumerate(variants):
+                try:
+                    results = paddle_ocr.ocr(variant, det=False, cls=False)
+                    if results and results[0]:
+                        for item in results[0]:
+                            if item and len(item) >= 2:
+                                text = str(item[0]).upper().strip()
+                                conf = float(item[1]) if item[1] is not None else 0.0
+                                clean = re.sub(r'[^A-Z0-9]', '', text)
+                                print(f"[PaddleOCR-tag] det=F {variant_names[vi]} raw='{text}' clean='{clean}' conf={conf:.3f}")
+                                if 1 < len(clean) <= 6 and conf > best_conf:
+                                    best_text = clean
+                                    best_conf = conf
+                except Exception as e:
+                    print(f"[PaddleOCR-tag] det=F {variant_names[vi]} failed: {e}")
+            
+            # Pass B: det=True (full pipeline — image is large enough after 6× + padding)
+            for vi, variant in enumerate(variants):
+                try:
+                    results = paddle_ocr.ocr(variant, det=True, cls=False)
+                    if results and results[0]:
+                        for line in results[0]:
+                            if line and len(line) >= 2:
+                                text = str(line[1][0]).upper().strip()
+                                conf = float(line[1][1]) if line[1][1] is not None else 0.0
+                                clean = re.sub(r'[^A-Z0-9]', '', text)
+                                print(f"[PaddleOCR-tag] det=T {variant_names[vi]} raw='{text}' clean='{clean}' conf={conf:.3f}")
+                                if 1 < len(clean) <= 6 and conf > best_conf:
+                                    best_text = clean
+                                    best_conf = conf
+                except Exception as e:
+                    print(f"[PaddleOCR-tag] det=T {variant_names[vi]} failed: {e}")
+            
+            if best_text and (best_conf >= 0.25 or len(best_text) <= 3):
+                return best_text
             return None
-        
-        # Sort by confidence
-        results.sort(key=lambda x: x[1], reverse=True)
-        
-        # Common OCR misreads for team tags
-        ocr_corrections = {
-            'MH': 'TH',   # T often misread as M
-            'WH': 'TH',   # T misread as W
-            'YRG': 'NRG', # N misread as Y
-            'MRG': 'NRG', # N misread as M
-            'IL': 'TL',   # T misread as I
-            '1L': 'TL',   # T misread as 1
-            'T1': 'TL',   # L misread as 1
-            'PRK': 'PRX', # X misread as K
-            'DRK': 'DRX', # X misread as K
-            'ORX': 'DRX', # D misread as O
-            'OPX': 'DRX', # D misread as O, R as P
-        }
-        
-        # First, look for exact matches to known tags
-        for text, conf in results:
-            clean = re.sub(r'[^A-Z0-9]', '', text)
-            # Apply OCR corrections first
-            if clean in ocr_corrections:
-                corrected = ocr_corrections[clean]
-                if corrected in known_tags:
-                    print(f"[TeamTagOCR] Corrected '{clean}' -> '{corrected}'")
-                    return corrected
-            if clean in known_tags:
-                return clean
-        
-        # Try fuzzy matching against known tags
-        for text, conf in results:
-            clean = re.sub(r'[^A-Z0-9]', '', text)
-            if 2 <= len(clean) <= 6:
-                # Check for close matches (1-2 char difference)
-                for tag in known_tags:
-                    if len(tag) == len(clean):
-                        diff = sum(1 for a, b in zip(tag, clean) if a != b)
-                        if diff <= 1:  # Allow 1 character difference
-                            return tag
-        
-        # Last resort: return the highest confidence short string
-        for text, conf in results:
-            clean = re.sub(r'[^A-Z0-9]', '', text)
-            if 2 <= len(clean) <= 5 and conf >= 0.5:
-                return clean
-        
-        return None
+        except Exception as e:
+            print(f"[TeamTagDetector] _ocr_team_tag_paddle error: {e}")
+            return None
 
     def _extract_players_from_video(
         self,
@@ -1732,6 +2221,11 @@ class KillfeedDetector(BaseDetector):
         # Replays show first-half highlights, need short cooldown before detecting new kills
         self._POST_HALFTIME_COOLDOWN_MS: float = 2000  # 2 seconds
         self._halftime_end_ms: float = 0.0
+        
+        # Crop saving: when set, weapon icon crops are written to this directory
+        self._crop_output_dir: Optional[str] = None
+        self._crop_counter: int = 0
+        
         # Scheduled halftime start (delayed from transition to capture final kills)
         self._halftime_scheduled_ms: float = 0.0
         # Track the round transition time for accurate round display in buffer window
@@ -2090,7 +2584,7 @@ class KillfeedDetector(BaseDetector):
             self._row_hashes[actual_row_idx] = row_hash
             
             entry = self._parse_row(row_img)
-            
+
             if not entry:
                 continue
             
@@ -2174,6 +2668,21 @@ class KillfeedDetector(BaseDetector):
             victim_key = victim_name_normalized.lower().strip() if victim_name_normalized != "Unknown" else None
             if victim_key:
                 self._victim_last_death[victim_key] = (t_ms, killer_name_normalized)
+
+            # Extract weapon/ability icon crop for this confirmed kill
+            icon_img = None
+            try:
+                icon_img = self._extract_weapon_icon(row_img)
+            except Exception:
+                pass
+            if icon_img is not None and self._crop_output_dir:
+                self._crop_counter += 1
+                crop_path = os.path.join(
+                    self._crop_output_dir,
+                    f"crop_{self._crop_counter:05d}_t{int(t_ms)}ms.png"
+                )
+                cv2.imwrite(crop_path, icon_img)
+            entry["weapon_icon"] = icon_img
 
             # Create kill event with normalized names
             kill_event = Event(
@@ -2293,6 +2802,100 @@ class KillfeedDetector(BaseDetector):
                 return True
                 
         return False
+
+    def _is_duplicate(self, t_ms: float, sig: Tuple) -> bool:
+        """
+        Check if this kill is a duplicate of a recent one.
+        
+        Uses two-tier duplicate detection:
+        1. PER-ROUND: A player can only die ONCE per round in Valorant
+           - If we've seen this victim die already this round, it's a duplicate
+           - This catches replays and multiple detections of the same killfeed entry
+        2. SHORT-TERM: Standard dedup within KILL_DEDUP_WINDOW_MS
+           - Handles OCR re-detection of same killfeed row
+        """
+        _, killer_team, victim_team, killer_name, victim_name = sig
+        
+        # ==== TIER 1: Per-round victim death tracking ====
+        victim_key = victim_name.lower().strip() if victim_name and victim_name != "Unknown" else None
+        
+        if victim_key:
+            if victim_key in self._victim_last_death:
+                last_death_time, last_killer = self._victim_last_death[victim_key]
+                time_since_death = t_ms - last_death_time
+                
+                if time_since_death < self.ROUND_DEDUP_WINDOW_MS:
+                    killer_key = killer_name.lower().strip() if killer_name else ""
+                    killer_sim = self._name_similarity(killer_name, last_killer)
+                    
+                    if killer_sim > 0.5:
+                        return True
+                    
+                    if time_since_death < 60000:
+                        return True
+        
+        # ==== TIER 2: Standard short-term dedup ====
+        for (sig_t, sig_kt, sig_vt, sig_kn, sig_vn) in self.recent_signatures:
+            time_diff = t_ms - sig_t
+            
+            if time_diff > KILL_DEDUP_WINDOW_MS:
+                continue
+            
+            killer_sim = self._name_similarity(killer_name, sig_kn)
+            victim_sim = self._name_similarity(victim_name, sig_vn)
+            
+            if victim_sim > 0.7 and killer_sim > 0.7:
+                if time_diff < 3000:
+                    return True
+            
+            if sig_kt == killer_team and sig_vt == victim_team:
+                if killer_sim > 0.7 and victim_sim > 0.7:
+                    return True
+                elif killer_sim > 0.5 and victim_sim > 0.5:
+                    if time_diff < 4000:
+                        return True
+                elif (killer_name == "Unknown" and victim_sim > 0.6) or \
+                     (victim_name == "Unknown" and killer_sim > 0.6):
+                    if time_diff < 3000:
+                        return True
+            
+            killer_as_victim = self._name_similarity(killer_name, sig_vn)
+            victim_as_killer = self._name_similarity(victim_name, sig_kn)
+            
+            if killer_as_victim > 0.6 and victim_as_killer > 0.6:
+                if time_diff < 4000:
+                    return True
+            
+            if time_diff < 1500:
+                if killer_sim > 0.8 and victim_sim > 0.8:
+                    return True
+            
+            if sig_kt != killer_team and sig_vt != victim_team:
+                if killer_sim > 0.6 and victim_sim > 0.6:
+                    if time_diff < 4000:
+                        return True
+        
+        return False
+
+    def _name_similarity(self, name1: str, name2: str) -> float:
+        """Calculate similarity between two names (0.0 to 1.0)."""
+        if not name1 or not name2:
+            return 0.0
+        if name1 == "Unknown" or name2 == "Unknown":
+            return 0.0
+        
+        n1 = self._normalize_player_name(name1).lower().strip()
+        n2 = self._normalize_player_name(name2).lower().strip()
+        
+        if n1 == n2:
+            return 1.0
+        
+        len_ratio = min(len(n1), len(n2)) / max(len(n1), len(n2), 1)
+        if (n1 in n2 or n2 in n1) and len_ratio > 0.6:
+            return 0.85
+        
+        common = sum(1 for c in n1 if c in n2)
+        return common / max(len(n1), len(n2), 1)
     
     def _correct_ocr_name(self, name: str) -> str:
         """
@@ -2340,6 +2943,115 @@ class KillfeedDetector(BaseDetector):
             if name_upper.startswith(prefix):
                 return name[len(prefix):].strip()
         return name
+
+    def _normalize_player_name(self, name: str) -> str:
+        """
+        Normalize OCR misreads to canonical player names.
+        Maps common OCR errors to correct names.
+        Returns "Unknown" for obvious OCR noise.
+        """
+        if not name or name == "Unknown":
+            return "Unknown"
+        
+        name_stripped = name.strip()
+        name_lower = name_stripped.lower()
+        
+        # ===== EARLY GARBAGE FILTERING =====
+        garbage_prefixes = ['ndc ', 'nde ', 'nid ', 'nide ', 'noc ', 'noe ', 'iv ', 'tip ']
+        for prefix in garbage_prefixes:
+            if name_lower.startswith(prefix):
+                name_stripped = name_stripped[len(prefix):].strip()
+                name_lower = name_stripped.lower()
+                break
+        
+        garbage_patterns = [
+            'the state of', 'the second', 'the same of',
+            'the party of', 'the property of', 'the person',
+            'column 2', 'column two', 'in column',
+            'a contractor', 'a real property', 'a security',
+            'the reserve', 'the residence', 'control of the',
+            'name of persons', 'named in column',
+            'math>', '<b>', '</b>', '<u>', '</u>',
+            '----', '____', '. . .', '* * *',
+            'management', 'services', 'alberta', 'valley',
+            'to nac', 'mac - ', 'all alpe', ' a ',
+        ]
+        for pattern in garbage_patterns:
+            if pattern in name_lower:
+                return "Unknown"
+        
+        if len(name_stripped) > 25:
+            return "Unknown"
+        
+        words = name_lower.split()
+        if len(words) >= 4:
+            word_counts: dict = {}
+            for word in words:
+                word_counts[word] = word_counts.get(word, 0) + 1
+            if word_counts:
+                max_freq = max(word_counts.values())
+                if max_freq > len(words) * 0.4:
+                    return "Unknown"
+        
+        player_part = name_stripped
+        for prefix in ['nrg ', 'fnc ', 'fng ', 'nag ', 'npg ', 'fne ']:
+            if name_lower.startswith(prefix):
+                player_part = name_stripped[4:]
+                break
+        
+        if len(player_part) < 3:
+            return "Unknown"
+        if player_part.isdigit():
+            return "Unknown"
+        if not any(c.isalpha() for c in player_part):
+            return "Unknown"
+        alpha_count = sum(1 for c in player_part if c.isalpha())
+        if alpha_count < len(player_part) * 0.5:
+            return "Unknown"
+        
+        if self._player_matcher:
+            db_match, extracted_team = self._player_matcher.match_killfeed_name(name_stripped)
+            if db_match:
+                if extracted_team:
+                    return f"{extracted_team} {db_match}"
+                team_side = self._player_matcher.get_player_team(db_match)
+                if team_side == "left" and self._player_matcher._left_team_code:
+                    return f"{self._player_matcher._left_team_code} {db_match}"
+                elif team_side == "right" and self._player_matcher._right_team_code:
+                    return f"{self._player_matcher._right_team_code} {db_match}"
+                return db_match
+        
+        left_prefixes = ['nrg ', 'nag ', 'npg ', 'nng ']
+        right_prefixes = ['fnc ', 'fng ', 'fne ', 'fnf ']
+        
+        for prefix in left_prefixes:
+            if name_lower.startswith(prefix):
+                player_part = name_stripped[4:] if len(name_stripped) > 4 else name_stripped
+                if len(player_part) >= 3:
+                    team_code = self._player_matcher._left_team_code if self._player_matcher else "NRG"
+                    return f"{team_code} {player_part}"
+                    
+        for prefix in right_prefixes:
+            if name_lower.startswith(prefix):
+                player_part = name_stripped[4:] if len(name_stripped) > 4 else name_stripped
+                if len(player_part) >= 3:
+                    team_code = self._player_matcher._right_team_code if self._player_matcher else "FNC"
+                    return f"{team_code} {player_part}"
+        
+        return "Unknown"
+
+    def _names_similar(self, name1: str, name2: str) -> bool:
+        """Check if two names are similar (for deduplication)."""
+        if not name1 or not name2:
+            return False
+        n1 = name1.lower().strip()
+        n2 = name2.lower().strip()
+        if n1 == n2:
+            return True
+        if n1 in n2 or n2 in n1:
+            return True
+        common = sum(1 for c in n1 if c in n2)
+        return common / max(len(n1), len(n2)) > 0.6
     
     def _segment_rows(self, roi_bgr: np.ndarray) -> List[Tuple[int, int, np.ndarray]]:
         """Segment killfeed into individual rows."""
@@ -2674,270 +3386,230 @@ class KillfeedDetector(BaseDetector):
             "victim_name": victim_name,
             "victim_team": victim_team,  # Raw color: teal or orange
             "weapon": "unknown",
+            # weapon_icon is a numpy image (BGR) cropped around the icon area
+            # This is kept for in-process classification only and not JSON-serializable.
+            # Use `set_weapon_classifier()` to attach a classifier and populate `weapon`.
+            "weapon_icon": None,
             "is_headshot": False,
             "confidence": 0.7 if killer_name != "Unknown" and victim_name != "Unknown" else 0.4,
         }
-    
+
+    def set_weapon_classifier(self, classifier: object):
+        """
+        Attach a weapon/ability classifier to the KillfeedDetector.
+
+        The classifier should expose one of the following methods to perform
+        inference on a BGR numpy image: `classify(img)`, `predict(img)`, or
+        `infer(img)` and return a string label (e.g., 'vandal' or 'jet_ult').
+        This method only stores the classifier reference; loading/initializing
+        the model is the caller's responsibility.
+        """
+        self._weapon_classifier = classifier
+
+    def _classify_weapon(self, icon_img: np.ndarray) -> str:
+        """
+        Classify a cropped weapon/ability icon using the attached classifier.
+        Returns label string or 'unknown' on failure.
+        """
+        if icon_img is None:
+            return "unknown"
+        clf = getattr(self, '_weapon_classifier', None)
+        if clf is None:
+            return "unknown"
+
+        # Try a few common method names to be flexible
+        for method in ('classify', 'predict', 'infer'):
+            fn = getattr(clf, method, None)
+            if callable(fn):
+                try:
+                    lbl = fn(icon_img)
+                    if isinstance(lbl, (list, tuple)):
+                        lbl = lbl[0]
+                    return str(lbl)
+                except Exception:
+                    continue
+        # If classifier exposes a `__call__`, try that
+        if callable(clf):
+            try:
+                lbl = clf(icon_img)
+                if isinstance(lbl, (list, tuple)):
+                    lbl = lbl[0]
+                return str(lbl)
+            except Exception:
+                return "unknown"
+
+        return "unknown"
+
+    def _extract_weapon_icon(self, row_img: np.ndarray) -> Optional[np.ndarray]:
+        """
+        Extract the weapon/ability icon from a killfeed row image.
+
+        Killfeed row structure:
+          [Agent] [Killer Name on colored bg] [WEAPON ICON] [arrow] [Victim on colored bg] [Agent]
+
+        Strategy — **hue-transition detection**:
+        Even in faded killfeed rows the *hue* of each team colour is clearly
+        identifiable (orange H≈11-19, teal H≈85-110) even at very low
+        saturation.  Rather than trying to threshold saturation to separate
+        the icon from the name background, we:
+
+        1. Classify every pixel's hue as orange-family, teal-family, or
+           neutral (ignoring near-grey / near-black pixels).
+        2. For each column compute the fraction of orange vs teal pixels and
+           derive a smoothed *dominance* signal (positive = orange, negative
+           = teal).
+        3. Find zero-crossings of the dominance signal.  The crossing
+           with the largest dominance-swing magnitude is the weapon-icon
+           location (portrait→name edges are weak; name→name is strong).
+        4. From that crossing, expand outward until we re-enter a solid
+           team-colour background on each side.
+        5. Enforce min/max crop width and return the crop at full row height.
+        """
+        try:
+            h, w = row_img.shape[:2]
+            if w < 60 or h < 10:
+                return None
+
+            hsv = cv2.cvtColor(row_img, cv2.COLOR_BGR2HSV)
+            H_ch = hsv[:, :, 0]  # shape (h, w)
+            S_ch = hsv[:, :, 1]
+            V_ch = hsv[:, :, 2]
+
+            # ── Step 1: Per-column hue classification (vectorised) ──
+            # Only consider pixels with a minimum saturation and brightness
+            # so that near-grey text / shadow pixels don't pollute the vote.
+            MIN_SAT = 15
+            MIN_VAL = 40
+            valid = (S_ch >= MIN_SAT) & (V_ch >= MIN_VAL)
+            n_valid = valid.sum(axis=0).astype(np.float64)
+            n_valid_safe = np.maximum(n_valid, 1.0)
+
+            # Orange hue family: H in [0, 30] or [150, 180]
+            orange_px = valid & ((H_ch <= 30) | (H_ch >= 150))
+            orange_frac = orange_px.sum(axis=0).astype(np.float64) / n_valid_safe
+
+            # Teal/cyan hue family: H in [70, 120]
+            teal_px = valid & (H_ch >= 70) & (H_ch <= 120)
+            teal_frac = teal_px.sum(axis=0).astype(np.float64) / n_valid_safe
+
+            # Zero-out columns with too few valid pixels
+            low_valid = n_valid < max(2, h * 0.2)
+            orange_frac[low_valid] = 0.0
+            teal_frac[low_valid] = 0.0
+
+            # ── Step 2: Smoothed dominance signal ──
+            ks = max(5, int(w * 0.025) | 1)  # ~15 px at w=585, ensure odd
+            kernel = np.ones(ks) / ks
+            orange_sm = np.convolve(orange_frac, kernel, mode='same')
+            teal_sm = np.convolve(teal_frac, kernel, mode='same')
+
+            # dominance > 0 → orange, < 0 → teal
+            dominance = orange_sm - teal_sm
+
+            # ── Step 3: Find zero-crossings (hue transitions) ──
+            crossings: list[int] = []
+            for x in range(1, w):
+                if dominance[x - 1] * dominance[x] < 0:
+                    crossings.append(x)
+                elif dominance[x - 1] != 0 and dominance[x] == 0:
+                    crossings.append(x)
+
+            if not crossings:
+                # No hue transition – same-team kill or heavily faded row
+                return self._center_fallback_crop(row_img)
+
+            # Pick the crossing with the LARGEST dominance swing.
+            # The weapon icon sits between two team-colored name backgrounds
+            # (team A → team B), producing the biggest sign change.  Portrait
+            # edges are weak (neutral → colored).
+            SWING_WINDOW = max(10, int(w * 0.06))  # ~35 px each side
+            best_cross = None
+            best_swing = -1.0
+            for cr in crossings:
+                # Reject crossings in the outer 15% (portrait area)
+                if cr < w * 0.15 or cr > w * 0.85:
+                    continue
+                left_avg = float(np.mean(dominance[max(0, cr - SWING_WINDOW):cr]))
+                right_avg = float(np.mean(dominance[cr:min(w, cr + SWING_WINDOW)]))
+                swing = abs(right_avg - left_avg)
+                if swing > best_swing:
+                    best_swing = swing
+                    best_cross = cr
+
+            if best_cross is None:
+                return self._center_fallback_crop(row_img)
+
+            # ── Step 4: Find the left edge of the weapon icon ──
+            # The weapon icon sits LEFT of the crossing.  Its pixels may
+            # share the killer’s team hue (e.g. teal), so we can’t use
+            # colour alone.  Instead, use the **valid pixel ratio** per
+            # column: under the killer’s white text, many pixels have very
+            # low saturation (S < MIN_SAT) and are filtered out, causing a
+            # drop in the fraction of “valid” (coloured) pixels.  After
+            # the text ends (weapon icon area), nearly all pixels are valid.
+            # Walking left from the crossing, the first sustained drop in
+            # valid_ratio marks where the name text begins.
+            right_bound = best_cross
+
+            valid_ratio = n_valid / max(1.0, float(h))
+            valid_sm = np.convolve(valid_ratio, kernel, mode='same')
+
+            VALID_THRESH = 0.70  # text area drops below this
+            MIN_ICON_COLS = 3    # must pass through icon before looking
+
+            left_bound = max(0, best_cross - 100)  # fallback: typical icon zone
+            icon_cols = 0
+            for x in range(best_cross - 1, max(0, int(w * 0.08)) - 1, -1):
+                if valid_sm[x] >= VALID_THRESH:
+                    icon_cols += 1
+                if icon_cols >= MIN_ICON_COLS and valid_sm[x] < VALID_THRESH:
+                    left_bound = x
+                    break
+
+            # ── Step 5: Enforce min/max width and crop ──
+            crop_w = right_bound - left_bound
+            MIN_CROP = 80
+            MAX_CROP = int(w * 0.40)
+
+            if crop_w < MIN_CROP:
+                # Expand leftward from crossing to reach minimum width
+                left_bound = max(0, right_bound - MIN_CROP)
+            elif crop_w > MAX_CROP:
+                left_bound = max(0, right_bound - MAX_CROP)
+
+            # Small padding
+            pad = max(2, int((right_bound - left_bound) * 0.06))
+            x0 = max(0, left_bound - pad)
+            x1 = min(w, right_bound + pad)
+
+            icon = row_img[0:h, x0:x1]
+            if icon.size == 0:
+                return None
+            return icon
+
+        except Exception:
+            return None
+
+
+    def _center_fallback_crop(self, row_img: np.ndarray) -> Optional[np.ndarray]:
+        """Fallback: return a conservative center crop when gap detection fails."""
+        h, w = row_img.shape[:2]
+        crop_w = int(min(80, max(32, w * 0.15)))
+        cx = w // 2
+        x0 = max(0, cx - crop_w // 2)
+        x1 = min(w, x0 + crop_w)
+        icon = row_img[0:h, x0:x1]
+        return icon if icon.size > 0 else None
+
     def _find_color_regions(self, mask: np.ndarray) -> List[Tuple[int, int, int, int]]:
         """Find contiguous color regions in a mask."""
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         regions = []
         for c in contours:
-            x, y, w, h = cv2.boundingRect(c)
-            if w > 8 and h > 4:
-                regions.append((x, y, w, h))
+            x, y, cw, ch = cv2.boundingRect(c)
+            if cw > 8 and ch > 4:
+                regions.append((x, y, cw, ch))
         return regions
-    
-    def _is_duplicate(self, t_ms: float, sig: Tuple) -> bool:
-        """
-        Check if this kill is a duplicate of a recent one.
-        
-        Uses two-tier duplicate detection:
-        1. PER-ROUND: A player can only die ONCE per round in Valorant
-           - If we've seen this victim die already this round, it's a duplicate
-           - This catches replays and multiple detections of the same killfeed entry
-        2. SHORT-TERM: Standard dedup within KILL_DEDUP_WINDOW_MS
-           - Handles OCR re-detection of same killfeed row
-        """
-        _, killer_team, victim_team, killer_name, victim_name = sig
-        
-        # ==== TIER 1: Per-round victim death tracking ====
-        # In Valorant, a player can only die ONCE per round
-        # If victim already died this round, it's definitely a duplicate
-        victim_key = victim_name.lower().strip() if victim_name and victim_name != "Unknown" else None
-        
-        if victim_key:
-            if victim_key in self._victim_last_death:
-                last_death_time, last_killer = self._victim_last_death[victim_key]
-                time_since_death = t_ms - last_death_time
-                
-                # If victim "died" again within round duration, it's a duplicate
-                # Rounds last ~100 seconds max, but use 90s window to be safe
-                if time_since_death < self.ROUND_DEDUP_WINDOW_MS:
-                    # Check if same killer (definitely duplicate) or different killer
-                    # Even different killer = duplicate if within same round
-                    killer_key = killer_name.lower().strip() if killer_name else ""
-                    killer_sim = self._name_similarity(killer_name, last_killer)
-                    
-                    # If same killer or very similar, definitely duplicate
-                    if killer_sim > 0.5:
-                        return True
-                    
-                    # Different killer but very short gap = replay showing kill
-                    if time_since_death < 60000:  # 60 seconds - well within a round
-                        return True
-        
-        # ==== TIER 2: Standard short-term dedup ====
-        
-        for (sig_t, sig_kt, sig_vt, sig_kn, sig_vn) in self.recent_signatures:
-            time_diff = t_ms - sig_t
-            
-            if time_diff > KILL_DEDUP_WINDOW_MS:
-                continue
-            
-            # Calculate name similarities
-            killer_sim = self._name_similarity(killer_name, sig_kn)
-            victim_sim = self._name_similarity(victim_name, sig_vn)
-            
-            # CRITICAL: Same victim AND same killer = definitely duplicate
-            # A player can only die once per kill event
-            # But require BOTH to match, not just victim (player can die multiple times per match)
-            if victim_sim > 0.7 and killer_sim > 0.7:
-                if time_diff < 3000:  # Within 3 seconds
-                    return True
-            
-            # Same teams and similar names
-            if sig_kt == killer_team and sig_vt == victim_team:
-                # Very high similarity on both = same kill
-                if killer_sim > 0.7 and victim_sim > 0.7:
-                    return True
-                # Good similarity on both
-                elif killer_sim > 0.5 and victim_sim > 0.5:
-                    if time_diff < 4000:
-                        return True
-                # One name is Unknown, the other matches well
-                elif (killer_name == "Unknown" and victim_sim > 0.6) or \
-                     (victim_name == "Unknown" and killer_sim > 0.6):
-                    if time_diff < 3000:
-                        return True
-            
-            # Check for SWAPPED names (killer<->victim confusion)
-            killer_as_victim = self._name_similarity(killer_name, sig_vn)
-            victim_as_killer = self._name_similarity(victim_name, sig_kn)
-            
-            if killer_as_victim > 0.6 and victim_as_killer > 0.6:
-                if time_diff < 4000:
-                    return True
-            
-            # Exact match on BOTH names within very short time = definitely duplicate
-            # But only filter if BOTH names match well (not just one)
-            if time_diff < 1500:
-                if killer_sim > 0.8 and victim_sim > 0.8:
-                    return True
-            
-            # Check for team swap (same names, different teams)
-            if sig_kt != killer_team and sig_vt != victim_team:
-                if killer_sim > 0.6 and victim_sim > 0.6:
-                    if time_diff < 4000:
-                        return True
-        
-        return False
-    
-    def _name_similarity(self, name1: str, name2: str) -> float:
-        """Calculate similarity between two names (0.0 to 1.0)."""
-        if not name1 or not name2:
-            return 0.0
-        if name1 == "Unknown" or name2 == "Unknown":
-            return 0.0
-        
-        # Normalize names first
-        n1 = self._normalize_player_name(name1).lower().strip()
-        n2 = self._normalize_player_name(name2).lower().strip()
-        
-        if n1 == n2:
-            return 1.0
-        
-        # Substring match is only valid if lengths are similar (ratio > 0.6)
-        # This prevents "Boo" vs "MiniBoo" from being considered duplicates
-        # while still catching "ardiis" vs "ardiiss" (OCR adding extra char)
-        len_ratio = min(len(n1), len(n2)) / max(len(n1), len(n2), 1)
-        if (n1 in n2 or n2 in n1) and len_ratio > 0.6:
-            return 0.85
-        
-        # Character overlap ratio
-        common = sum(1 for c in n1 if c in n2)
-        return common / max(len(n1), len(n2), 1)
-    
-    def _normalize_player_name(self, name: str) -> str:
-        """
-        Normalize OCR misreads to canonical player names.
-        Maps common OCR errors to correct names.
-        Returns "Unknown" for obvious OCR noise.
-        """
-        if not name or name == "Unknown":
-            return "Unknown"
-        
-        name_stripped = name.strip()
-        name_lower = name_stripped.lower()
-        
-        # ===== EARLY GARBAGE FILTERING =====
-        # Filter known garbage prefixes that are OCR errors
-        garbage_prefixes = ['ndc ', 'nde ', 'nid ', 'nide ', 'noc ', 'noe ', 'iv ', 'tip ']
-        for prefix in garbage_prefixes:
-            if name_lower.startswith(prefix):
-                # Strip the garbage prefix and re-process
-                name_stripped = name_stripped[len(prefix):].strip()
-                name_lower = name_stripped.lower()
-                break
-        
-        # Filter repetitive garbage patterns from Surya hallucinations
-        garbage_patterns = [
-            'the state of', 'the second', 'the same of',
-            'the party of', 'the property of', 'the person',
-            'column 2', 'column two', 'in column',
-            'a contractor', 'a real property', 'a security',
-            'the reserve', 'the residence', 'control of the',
-            'name of persons', 'named in column',
-            'math>', '<b>', '</b>', '<u>', '</u>',
-            '----', '____', '. . .', '* * *',
-            'management', 'services', 'alberta', 'valley',
-            'to nac', 'mac - ', 'all alpe', ' a ',
-        ]
-        for pattern in garbage_patterns:
-            if pattern in name_lower:
-                return "Unknown"
-        
-        # Filter text that's too long (player names with prefix are < 20 chars)
-        if len(name_stripped) > 25:
-            return "Unknown"
-        
-        # Filter if mostly repetitive words
-        words = name_lower.split()
-        if len(words) >= 4:
-            word_counts = {}
-            for word in words:
-                word_counts[word] = word_counts.get(word, 0) + 1
-            if word_counts:
-                max_freq = max(word_counts.values())
-                if max_freq > len(words) * 0.4:  # >40% same word = garbage
-                    return "Unknown"
-        
-        # Filter out obvious OCR noise
-        # - Too short (less than 3 chars after stripping team prefix)
-        # - Pure numbers
-        # - Single letters or gibberish
-        player_part = name_stripped
-        for prefix in ['nrg ', 'fnc ', 'fng ', 'nag ', 'npg ', 'fne ']:
-            if name_lower.startswith(prefix):
-                player_part = name_stripped[4:]
-                break
-        
-        # Reject obvious garbage
-        if len(player_part) < 3:
-            return "Unknown"
-        if player_part.isdigit():
-            return "Unknown"
-        if not any(c.isalpha() for c in player_part):
-            return "Unknown"
-        # Reject if too many special characters
-        alpha_count = sum(1 for c in player_part if c.isalpha())
-        if alpha_count < len(player_part) * 0.5:
-            return "Unknown"
-        
-        # ===== SCALABLE PLAYER MATCHING =====
-        # Use the player matcher if available to find canonical names
-        # This works for ANY match, not just specific players
-        if self._player_matcher:
-            # Try matching with the DB player pool (lowered threshold of 0.55)
-            db_match, extracted_team = self._player_matcher.match_killfeed_name(name_stripped)
-            if db_match:
-                # Use extracted team from OCR if available, else try to find from player matcher
-                if extracted_team:
-                    return f"{extracted_team} {db_match}"
-                team_side = self._player_matcher.get_player_team(db_match)
-                if team_side == "left" and self._player_matcher._left_team_code:
-                    return f"{self._player_matcher._left_team_code} {db_match}"
-                elif team_side == "right" and self._player_matcher._right_team_code:
-                    return f"{self._player_matcher._right_team_code} {db_match}"
-                return db_match
-        
-        # ===== TEAM PREFIX NORMALIZATION =====
-        # If we have a team prefix, normalize it and keep the player part
-        # Support common OCR errors in team prefixes
-        left_prefixes = ['nrg ', 'nag ', 'npg ', 'nng ']
-        right_prefixes = ['fnc ', 'fng ', 'fne ', 'fnf ']
-        
-        for prefix in left_prefixes:
-            if name_lower.startswith(prefix):
-                player_part = name_stripped[4:] if len(name_stripped) > 4 else name_stripped
-                if len(player_part) >= 3:
-                    team_code = self._player_matcher._left_team_code if self._player_matcher else "NRG"
-                    return f"{team_code} {player_part}"
-                    
-        for prefix in right_prefixes:
-            if name_lower.startswith(prefix):
-                player_part = name_stripped[4:] if len(name_stripped) > 4 else name_stripped
-                if len(player_part) >= 3:
-                    team_code = self._player_matcher._right_team_code if self._player_matcher else "FNC"
-                    return f"{team_code} {player_part}"
-        
-        # If name has no recognizable team prefix and no DB match, reject as unknown
-        # (helps filter out garbage OCR)
-        return "Unknown"
-
-    def _names_similar(self, name1: str, name2: str) -> bool:
-        """Check if two names are similar (for deduplication)."""
-        if not name1 or not name2:
-            return False
-        n1 = name1.lower().strip()
-        n2 = name2.lower().strip()
-        if n1 == n2:
-            return True
-        if n1 in n2 or n2 in n1:
-            return True
-        # Simple character overlap
-        common = sum(1 for c in n1 if c in n2)
-        return common / max(len(n1), len(n2)) > 0.6
 
 
 # ======================================
@@ -2955,40 +3627,27 @@ class TopHUDDetector(BaseDetector):
     - Score not visible or invalid = halftime/replay/ads
     """
     
-    # VALORANT score rules
-    MAX_REALISTIC_SCORE = 20   # Max score in extreme overtime
-    HALFTIME_TOTAL_ROUNDS = 12  # First half ends after 12 rounds
+    MAX_REALISTIC_SCORE = 20
+    HALFTIME_TOTAL_ROUNDS = 12
     
     def __init__(self, roi_name: str, target_fps: float):
         super().__init__(roi_name, target_fps)
         self._spike_planted = False
-        
-        # Track confirmed scores - start at 0-0
         self._confirmed_left_score = 0
         self._confirmed_right_score = 0
         self._last_score_change_ms = 0
         self._round_count = 0
-        
-        # OCR reader (lazy loaded)
         self._score_ocr_reader = None
-        
-        # Debounce: minimum 5 seconds between round transitions
-        self._ROUND_DEBOUNCE_MS = 5000
-        
-        # Score visibility tracking for halftime detection
-        self._last_valid_score_ms = 0  # Last time we saw a valid score
-        self._consecutive_invalid_frames = 0  # How many frames without valid score
-        self._score_stability_start_ms = 0  # When current stable score started
-        self._SCORE_STABLE_THRESHOLD_MS = 3000  # Score must be stable for 3s to confirm live
+        self._last_valid_score_ms = 0
+        self._consecutive_invalid_frames = 0
+        self._score_stability_start_ms = 0
+        self._SCORE_STABLE_THRESHOLD_MS = 3000
         self._in_halftime = False
-        self._halftime_listeners = []  # Callbacks for halftime state changes
+        self._halftime_listeners: list = []
         self._ROUND_DEBOUNCE_MS = 5000
     
     def add_halftime_listener(self, callback):
-        """Add a callback to be notified of halftime state changes.
-        
-        Callback signature: callback(in_halftime: bool, timestamp_ms: float)
-        """
+        """Add a callback to be notified of halftime state changes."""
         self._halftime_listeners.append(callback)
     
     def is_in_halftime(self) -> bool:
@@ -3010,51 +3669,35 @@ class TopHUDDetector(BaseDetector):
         return self._score_ocr_reader
     
     def _extract_score(self, score_roi: np.ndarray) -> Tuple[int, float]:
-        """
-        Extract a score number (0-20) from a score ROI using EasyOCR.
-        Returns (score, confidence) or (-1, 0.0) if unable to read.
-        Uses multiple preprocessing approaches for robustness.
-        """
+        """Extract a score number (0-20) from a score ROI using EasyOCR."""
         try:
             if score_roi is None or score_roi.size == 0:
                 return -1, 0.0
-            
             ocr = self._get_score_ocr_reader()
             if ocr is None:
                 return -1, 0.0
-            
             h, w = score_roi.shape[:2]
-            
-            # Try multiple preprocessing approaches
             candidates = []
-            
-            # Method 1: Scale up 3x (small digits need scaling)
             scaled = cv2.resize(score_roi, (w * 3, h * 3), interpolation=cv2.INTER_CUBIC)
             results = ocr.readtext(scaled, allowlist='0123456789')
             if results:
                 candidates.append((results[0][1], results[0][2], 'scaled'))
-            
-            # Method 2: Grayscale + threshold for white text
             gray = cv2.cvtColor(score_roi, cv2.COLOR_BGR2GRAY)
             _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
             thresh_scaled = cv2.resize(thresh, (w * 3, h * 3), interpolation=cv2.INTER_CUBIC)
             results = ocr.readtext(thresh_scaled, allowlist='0123456789')
             if results:
                 candidates.append((results[0][1], results[0][2], 'thresh'))
-            
-            # Method 3: CLAHE contrast enhancement
             clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(2, 2))
             enhanced = clahe.apply(gray)
             enhanced_scaled = cv2.resize(enhanced, (w * 3, h * 3), interpolation=cv2.INTER_CUBIC)
             results = ocr.readtext(enhanced_scaled, allowlist='0123456789')
             if results:
                 candidates.append((results[0][1], results[0][2], 'clahe'))
-            
-            # Pick best candidate by confidence
             best_score = -1
             best_conf = 0.0
             for text, conf, method in candidates:
-                if conf >= 0.4:  # Lower threshold since we validate range
+                if conf >= 0.4:
                     try:
                         score = int(text)
                         if 0 <= score <= self.MAX_REALISTIC_SCORE:
@@ -3063,190 +3706,104 @@ class TopHUDDetector(BaseDetector):
                                 best_conf = conf
                     except ValueError:
                         pass
-            
             if best_score >= 0:
                 return best_score, best_conf
-            
             return -1, 0.0
-        except Exception as e:
+        except Exception:
             return -1, 0.0
 
     def _detect(self, t_ms: float, roi_frame: np.ndarray) -> List[Event]:
-        """
-        Detect round transitions by reading scores with direct EasyOCR.
-        
-        Uses ROI coordinates from settings, converted relative to top_hud region.
-        Score ROIs in settings are normalized to full frame, so we convert them
-        to be relative to top_hud which starts at (0.335, 0.005) with size (0.330, 0.200).
-        """
+        """Detect round transitions by reading scores with direct EasyOCR."""
         events = []
         h, w = roi_frame.shape[:2]
-        
-        # Get score ROIs from settings (normalized to full frame)
-        # top_left_score: (0.417, 0.009, 0.036, 0.042) - full frame coords
-        # top_right_score: (0.555, 0.009, 0.036, 0.042) - full frame coords
-        # top_hud: (0.335, 0.005, 0.330, 0.200) - the region we receive as roi_frame
-        
-        # Convert full-frame normalized coords to top_hud relative coords
         top_hud_x, top_hud_y = 0.335, 0.005
         top_hud_w, top_hud_h = 0.330, 0.200
-        
-        # Left score: (0.417, 0.009, 0.036, 0.042)
         left_norm_x = (0.417 - top_hud_x) / top_hud_w
         left_norm_y = (0.009 - top_hud_y) / top_hud_h
         left_norm_w = 0.036 / top_hud_w
         left_norm_h = 0.042 / top_hud_h
-        
-        # Right score: (0.555, 0.009, 0.036, 0.042)
         right_norm_x = (0.555 - top_hud_x) / top_hud_w
         right_norm_y = (0.009 - top_hud_y) / top_hud_h
         right_norm_w = 0.036 / top_hud_w
         right_norm_h = 0.042 / top_hud_h
-        
-        # Convert to pixel coordinates
         left_x = int(left_norm_x * w)
         left_y = int(left_norm_y * h)
-        score_w = int(left_norm_w * w)
-        score_h = int(left_norm_h * h)
-        
+        score_w = max(int(left_norm_w * w), 40)
+        score_h = max(int(left_norm_h * h), 30)
         right_x = int(right_norm_x * w)
         right_y = int(right_norm_y * h)
-        
-        # Ensure minimum dimensions
-        score_w = max(score_w, 40)
-        score_h = max(score_h, 30)
-        
-        # Clamp to valid bounds
         left_x = max(0, min(left_x, w - score_w))
         right_x = max(0, min(right_x, w - score_w))
         left_y = max(0, min(left_y, h - score_h))
         right_y = max(0, min(right_y, h - score_h))
-        
-        # Extract ROIs
         left_roi = roi_frame[left_y:left_y+score_h, left_x:left_x+score_w]
         right_roi = roi_frame[right_y:right_y+score_h, right_x:right_x+score_w]
-        
-        # Read scores with EasyOCR
         left_score, left_conf = self._extract_score(left_roi)
         right_score, right_conf = self._extract_score(right_roi)
-        
-        # Track score visibility for halftime detection
         score_visible = left_score >= 0 and right_score >= 0 and left_conf >= 0.5 and right_conf >= 0.5
-        
         if score_visible:
             self._consecutive_invalid_frames = 0
             self._last_valid_score_ms = t_ms
-            
-            # Check if we're at halftime (total rounds = 12)
             current_total = left_score + right_score
-            if current_total == self.HALFTIME_TOTAL_ROUNDS and not self._in_halftime:
-                # We just completed first half - wait for stable second half score
-                pass
-            
-            # Check for exit from halftime: 
-            # IMPORTANT: Only end halftime if the score is VALID
-            # At halftime, score was X-Y where X+Y=12. Valid post-halftime scores are:
-            # 1. Same score X-Y (round 13 starting/in progress)
-            # 2. X-(Y+1) or (X+1)-Y (round 13 just ended)
-            # Invalid: swapped scores (Y-X), advertisement scores, etc.
             if self._in_halftime:
-                halftime_min_duration_ms = 30000  # Halftime is at least 30 seconds
+                halftime_min_duration_ms = 30000
                 time_in_halftime = t_ms - self._halftime_start_ms if hasattr(self, '_halftime_start_ms') else 0
-                
-                # Get the pre-halftime score for validation
                 pre_halftime_left = self._confirmed_left_score
                 pre_halftime_right = self._confirmed_right_score
-                
-                # Check if detected score is valid continuation from pre-halftime
+
                 def is_valid_post_halftime_score(left, right, pre_left, pre_right):
-                    """Validate that score is a valid continuation from halftime."""
-                    # Score must be >= pre-halftime scores (can only gain points, not lose)
                     if left < pre_left or right < pre_right:
                         return False
-                    # Total rounds can only increase by at most a few (not jump by many)
                     total_increase = (left + right) - (pre_left + pre_right)
-                    if total_increase > 5:  # Allow some rounds to pass during halftime
+                    if total_increase > 5:
                         return False
                     return True
-                
+
                 is_valid_score = is_valid_post_halftime_score(left_score, right_score, pre_halftime_left, pre_halftime_right)
-                
                 should_end_halftime = False
                 if is_valid_score and time_in_halftime > halftime_min_duration_ms:
                     if current_total > self.HALFTIME_TOTAL_ROUNDS:
-                        # Valid score change detected (round 13 ended)
                         should_end_halftime = True
                     elif current_total == self.HALFTIME_TOTAL_ROUNDS:
-                        # Same halftime score visible again - round 13 is starting/in progress
                         should_end_halftime = True
                 elif not is_valid_score:
-                    # Invalid score detected during halftime - reset stability tracking
                     self._score_stability_start_ms = 0
-                    if left_score != right_score:  # Don't spam logs for 0-0 type reads
-                        print(f"[TopHUD] Invalid score {left_score}-{right_score} during halftime (expected continuation from {pre_halftime_left}-{pre_halftime_right}) at t={t_ms/1000:.1f}s")
-                
                 if should_end_halftime:
-                    # Score visibility indicates live match resumed
                     if self._score_stability_start_ms == 0:
                         self._score_stability_start_ms = t_ms
                     elif t_ms - self._score_stability_start_ms >= self._SCORE_STABLE_THRESHOLD_MS:
-                        # Score has been stable for 3+ seconds - halftime is over
                         self._in_halftime = False
                         print(f"[TopHUD] Halftime ended - stable score {left_score}-{right_score} detected at t={t_ms/1000:.1f}s")
-                        # Notify listeners
                         for callback in self._halftime_listeners:
                             callback(False, t_ms)
         else:
             self._consecutive_invalid_frames += 1
-            self._score_stability_start_ms = 0  # Reset stability tracking
-            
-            # If score not visible for too long after halftime score, we're in halftime break
+            self._score_stability_start_ms = 0
             confirmed_total = self._confirmed_left_score + self._confirmed_right_score
             if confirmed_total == self.HALFTIME_TOTAL_ROUNDS and not self._in_halftime:
-                # Score became unreadable after reaching halftime - enter halftime mode
-                if self._consecutive_invalid_frames >= 5:  # ~2.5s at 2 FPS
+                if self._consecutive_invalid_frames >= 5:
                     self._in_halftime = True
-                    self._halftime_start_ms = t_ms  # Track when halftime started
+                    self._halftime_start_ms = t_ms
                     print(f"[TopHUD] Halftime started - score {self._confirmed_left_score}-{self._confirmed_right_score} no longer visible at t={t_ms/1000:.1f}s")
-                    # Notify listeners
                     for callback in self._halftime_listeners:
                         callback(True, t_ms)
-        
-        # Only process if both scores are valid and confident
+
         if left_score >= 0 and right_score >= 0 and left_conf >= 0.5 and right_conf >= 0.5:
-            # Check if score changed
             if left_score != self._confirmed_left_score or right_score != self._confirmed_right_score:
-                # Validate the change makes sense
                 total_old = self._confirmed_left_score + self._confirmed_right_score
                 total_new = left_score + right_score
-                
-                # VALIDATION 1: Total score should only increase by exactly 1 (one round at a time)
-                # This prevents halftime confusion where OCR might read swapped values
                 rounds_added = total_new - total_old
-                if rounds_added != 1:
-                    # Skip invalid transitions (halftime visual glitch, OCR errors)
-                    # Could be 0 (no change), negative (wrong), or >1 (skipped rounds)
-                    pass
-                else:
-                    # VALIDATION 2: Individual scores should never DECREASE
-                    # Each team's score can only stay same or +1
+                if rounds_added == 1:
                     left_change = left_score - self._confirmed_left_score
                     right_change = right_score - self._confirmed_right_score
-                    
-                    # Valid transitions: (0,1) or (1,0) - one team wins the round
                     valid_transition = (
                         (left_change == 0 and right_change == 1) or
                         (left_change == 1 and right_change == 0)
                     )
-                    
                     if valid_transition:
                         time_since_last = t_ms - self._last_score_change_ms
-                        
-                        # Debounce check
                         if time_since_last > self._ROUND_DEBOUNCE_MS or self._last_score_change_ms == 0:
                             print(f"[ROUND] Score: {self._confirmed_left_score}-{self._confirmed_right_score} -> {left_score}-{right_score} at t={t_ms/1000:.1f}s (conf: L={left_conf:.2f}, R={right_conf:.2f})", flush=True)
-                            
-                            # Emit round transition event
                             self._round_count += 1
                             events.append(Event(
                                 t_ms=t_ms,
@@ -3258,18 +3815,15 @@ class TopHUDDetector(BaseDetector):
                                     "right_score": right_score,
                                 }
                             ))
-                            
                             self._confirmed_left_score = left_score
                             self._confirmed_right_score = right_score
                             self._last_score_change_ms = t_ms
-        
-        # Detect spike status (look for red/orange danger colors)
+
+        # Detect spike status
         hsv = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2HSV)
         danger_mask = cv2.inRange(hsv, np.array([0, 100, 100]), np.array([20, 255, 255]))
         danger_pixels = cv2.countNonZero(danger_mask)
-        
         spike_planted = danger_pixels > roi_frame.shape[0] * roi_frame.shape[1] * 0.01
-        
         if spike_planted != self._spike_planted:
             if spike_planted:
                 events.append(Event(
@@ -3279,7 +3833,7 @@ class TopHUDDetector(BaseDetector):
                     payload={}
                 ))
             self._spike_planted = spike_planted
-        
+
         return events
 
 
