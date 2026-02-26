@@ -2671,8 +2671,14 @@ class KillfeedDetector(BaseDetector):
 
             # Extract weapon/ability icon crop for this confirmed kill
             icon_img = None
+            ktr = entry.get("killer_text_right")
+            vtl = entry.get("victim_text_left")
             try:
-                icon_img = self._extract_weapon_icon(row_img)
+                icon_img = self._extract_weapon_icon(
+                    row_img,
+                    killer_text_right=ktr,
+                    victim_text_left=vtl,
+                )
             except Exception:
                 pass
             if icon_img is not None and self._crop_output_dir:
@@ -3293,8 +3299,8 @@ class KillfeedDetector(BaseDetector):
                         strategies=['contrast']  # Single pass for speed
                     )
                     # Convert to standard format (results already scaled by preprocessing)
-                    # The preprocessing scales 1.5x now (reduced from 3x for speed)
-                    scale = 1.5  # Matches new preprocessing scale
+                    # The preprocessing functions all use fx=2, fy=2
+                    scale = 2  # Matches preprocessing scale in ocr_engine.py
                     results = []
                     for r in multipass_results:
                         # x position needs to be divided by scale since preprocessing enlarged the image
@@ -3319,18 +3325,22 @@ class KillfeedDetector(BaseDetector):
                         # Handle both tuple bbox (new) and list bbox (legacy)
                         if isinstance(bbox, tuple) and len(bbox) == 4:
                             x_center = (bbox[0] + bbox[2] / 2) / scale
+                            x_left = bbox[0] / scale
+                            x_right = (bbox[0] + bbox[2]) / scale
                         else:
                             x_center = (bbox[0][0] + bbox[2][0]) / 2 / scale
+                            x_left = min(bbox[0][0], bbox[3][0]) / scale
+                            x_right = max(bbox[1][0], bbox[2][0]) / scale
                         raw_name = text.strip()
                         
                         # NOTE: Don't do early fuzzy matching here - let _detect() handle it
                         # with proper team codes to avoid matching players to wrong teams
                         # (e.g., matching 'doma' garbage to a player not in this match)
                         
-                        names.append({"name": raw_name, "x": x_center, "conf": conf})
+                        names.append({"name": raw_name, "x": x_center, "x_left": x_left, "x_right": x_right, "conf": conf})
                 
                 names.sort(key=lambda n: n["x"])
-                
+
                 if len(names) >= 2:
                     killer_name = names[0]["name"]
                     victim_name = names[-1]["name"]
@@ -3380,6 +3390,16 @@ class KillfeedDetector(BaseDetector):
         # The _get_team_name_from_color() function handles halftime/overtime color swaps
         # when building the summary/timeline. Do NOT swap colors here to avoid double-swapping.
         
+        # Compute text boundaries for weapon icon extraction
+        # killer_text_right = right edge of killer (leftmost) text bbox
+        # victim_text_left = left edge of victim (rightmost) text bbox
+        # Since names is sorted by x, names[0] is killer and names[-1] is victim
+        killer_text_right = None
+        victim_text_left = None
+        if len(names) >= 2:
+            killer_text_right = names[0]["x_right"]
+            victim_text_left = names[-1]["x_left"]
+        
         return {
             "killer_name": killer_name,
             "killer_team": killer_team,  # Raw color: teal or orange
@@ -3392,6 +3412,9 @@ class KillfeedDetector(BaseDetector):
             "weapon_icon": None,
             "is_headshot": False,
             "confidence": 0.7 if killer_name != "Unknown" and victim_name != "Unknown" else 0.4,
+            # Text boundaries for weapon icon extraction (pixel coords in row_img)
+            "killer_text_right": killer_text_right,
+            "victim_text_left": victim_text_left,
         }
 
     def set_weapon_classifier(self, classifier: object):
@@ -3440,29 +3463,26 @@ class KillfeedDetector(BaseDetector):
 
         return "unknown"
 
-    def _extract_weapon_icon(self, row_img: np.ndarray) -> Optional[np.ndarray]:
+    def _extract_weapon_icon(self, row_img: np.ndarray, killer_text_right: float = None, victim_text_left: float = None) -> Optional[np.ndarray]:
         """
         Extract the weapon/ability icon from a killfeed row image.
 
         Killfeed row structure:
           [Agent] [Killer Name on colored bg] [WEAPON ICON] [arrow] [Victim on colored bg] [Agent]
 
-        Strategy — **hue-transition detection**:
-        Even in faded killfeed rows the *hue* of each team colour is clearly
-        identifiable (orange H≈11-19, teal H≈85-110) even at very low
-        saturation.  Rather than trying to threshold saturation to separate
-        the icon from the name background, we:
+        Primary strategy — **OCR text boundary detection**:
+        If killer_text_right and victim_text_left are provided (from OCR
+        bounding boxes in _parse_row), crop the region between where the
+        killer name text ends and the victim name text begins.  This
+        naturally captures the weapon icon + any headshot indicator.
 
+        Fallback strategy — **hue-gap gradient detection**:
         1. Classify every pixel's hue as orange-family, teal-family, or
            neutral (ignoring near-grey / near-black pixels).
-        2. For each column compute the fraction of orange vs teal pixels and
-           derive a smoothed *dominance* signal (positive = orange, negative
-           = teal).
-        3. Find zero-crossings of the dominance signal.  The crossing
-           with the largest dominance-swing magnitude is the weapon-icon
-           location (portrait→name edges are weak; name→name is strong).
-        4. From that crossing, expand outward until we re-enter a solid
-           team-colour background on each side.
+        2. Compute a smoothed dominance signal and find the strongest
+           zero-crossing (hue transition = weapon-icon location).
+        3. Use dominance gradient to detect the transition zone width.
+        4. Extend proportionally from the gradient edges.
         5. Enforce min/max crop width and return the crop at full row height.
         """
         try:
@@ -3470,14 +3490,35 @@ class KillfeedDetector(BaseDetector):
             if w < 60 or h < 10:
                 return None
 
+            # ── Primary: OCR text boundary crop ──
+            if killer_text_right is not None and victim_text_left is not None:
+                left_bound = int(round(killer_text_right))
+                right_bound = int(round(victim_text_left))
+                gap = right_bound - left_bound
+
+                # Debug logging for first 10 crops
+                if hasattr(self, '_crop_counter') and self._crop_counter < 10:
+                    print(f"[TEXT-CROP] crop#{self._crop_counter} killer_right={killer_text_right:.1f} victim_left={victim_text_left:.1f} gap={gap} w={w}")
+
+                if gap >= 20:  # minimum gap for a weapon icon
+                    # OCR bboxes tend to extend slightly past the actual
+                    # text glyphs, so trim inward a few pixels to avoid
+                    # capturing the last character of the killer name or
+                    # the first character of the victim name.
+                    trim = max(4, int(gap * 0.06))  # ~6px at gap=100
+                    x0 = max(0, left_bound + trim)
+                    x1 = min(w, right_bound - trim)
+                    icon = row_img[0:h, x0:x1]
+                    if icon.size > 0:
+                        return icon
+                # If gap < 20 or other issue, fall through to gradient approach
+
             hsv = cv2.cvtColor(row_img, cv2.COLOR_BGR2HSV)
             H_ch = hsv[:, :, 0]  # shape (h, w)
             S_ch = hsv[:, :, 1]
             V_ch = hsv[:, :, 2]
 
             # ── Step 1: Per-column hue classification (vectorised) ──
-            # Only consider pixels with a minimum saturation and brightness
-            # so that near-grey text / shadow pixels don't pollute the vote.
             MIN_SAT = 15
             MIN_VAL = 40
             valid = (S_ch >= MIN_SAT) & (V_ch >= MIN_VAL)
@@ -3515,18 +3556,12 @@ class KillfeedDetector(BaseDetector):
                     crossings.append(x)
 
             if not crossings:
-                # No hue transition – same-team kill or heavily faded row
                 return self._center_fallback_crop(row_img)
 
-            # Pick the crossing with the LARGEST dominance swing.
-            # The weapon icon sits between two team-colored name backgrounds
-            # (team A → team B), producing the biggest sign change.  Portrait
-            # edges are weak (neutral → colored).
-            SWING_WINDOW = max(10, int(w * 0.06))  # ~35 px each side
+            SWING_WINDOW = max(10, int(w * 0.06))
             best_cross = None
             best_swing = -1.0
             for cr in crossings:
-                # Reject crossings in the outer 15% (portrait area)
                 if cr < w * 0.15 or cr > w * 0.85:
                     continue
                 left_avg = float(np.mean(dominance[max(0, cr - SWING_WINDOW):cr]))
@@ -3539,46 +3574,97 @@ class KillfeedDetector(BaseDetector):
             if best_cross is None:
                 return self._center_fallback_crop(row_img)
 
-            # ── Step 4: Find the left edge of the weapon icon ──
-            # The weapon icon sits LEFT of the crossing.  Its pixels may
-            # share the killer’s team hue (e.g. teal), so we can’t use
-            # colour alone.  Instead, use the **valid pixel ratio** per
-            # column: under the killer’s white text, many pixels have very
-            # low saturation (S < MIN_SAT) and are filtered out, causing a
-            # drop in the fraction of “valid” (coloured) pixels.  After
-            # the text ends (weapon icon area), nearly all pixels are valid.
-            # Walking left from the crossing, the first sustained drop in
-            # valid_ratio marks where the name text begins.
-            right_bound = best_cross
+            # ── Step 4: Detect weapon boundaries via dominance gradient ──
+            #
+            # The dominance signal (orange_sm − teal_sm) transitions
+            # sharply through the weapon-icon zone: strongly positive in
+            # the killer-name region, strongly negative in the victim-
+            # name region.  The absolute value of its spatial gradient
+            # is large inside the weapon zone (rapid hue transition) and
+            # near-zero in the name zones (flat colour).  Walking
+            # outward from the crossing until the gradient drops below a
+            # threshold naturally delineates the weapon icon without
+            # requiring any assumptions about pixel brightness or color.
 
-            valid_ratio = n_valid / max(1.0, float(h))
-            valid_sm = np.convolve(valid_ratio, kernel, mode='same')
+            dom_grad = np.abs(np.gradient(dominance))
 
-            VALID_THRESH = 0.70  # text area drops below this
-            MIN_ICON_COLS = 3    # must pass through icon before looking
+            # Smooth the gradient to avoid single-column noise
+            gk = 15
+            g_kernel = np.ones(gk) / gk
+            grad_smooth = np.convolve(dom_grad, g_kernel, mode='same')
 
-            left_bound = max(0, best_cross - 100)  # fallback: typical icon zone
-            icon_cols = 0
-            for x in range(best_cross - 1, max(0, int(w * 0.08)) - 1, -1):
-                if valid_sm[x] >= VALID_THRESH:
-                    icon_cols += 1
-                if icon_cols >= MIN_ICON_COLS and valid_sm[x] < VALID_THRESH:
-                    left_bound = x
-                    break
+            # Use a relative threshold: fraction of the peak gradient near
+            # the crossing.  This adapts to each row's signal strength.
+            peak_window = 40
+            peak_lo = max(0, best_cross - peak_window)
+            peak_hi = min(len(grad_smooth), best_cross + peak_window)
+            peak_grad = float(grad_smooth[peak_lo:peak_hi].max())
+            GRAD_THRESH = max(peak_grad * 0.04, 0.001)  # 4% of peak, min 0.001
+            CONSEC_DROP = 6
 
-            # ── Step 5: Enforce min/max width and crop ──
+            safe_left = int(w * 0.08)
+            safe_right = int(w * 0.92)
+
+            # Walk LEFT from crossing: find where gradient drops
+            weapon_left = safe_left  # fallback
+            consec = 0
+            for x in range(best_cross - 1, safe_left - 1, -1):
+                if grad_smooth[x] < GRAD_THRESH:
+                    consec += 1
+                    if consec >= CONSEC_DROP:
+                        weapon_left = x + CONSEC_DROP
+                        break
+                else:
+                    consec = 0
+
+            # Walk RIGHT from crossing: find where gradient drops
+            weapon_right = safe_right  # fallback
+            consec = 0
+            for x in range(best_cross + 1, safe_right + 1):
+                if grad_smooth[x] < GRAD_THRESH:
+                    consec += 1
+                    if consec >= CONSEC_DROP:
+                        weapon_right = x - CONSEC_DROP
+                        break
+                else:
+                    consec = 0
+
+            # ── Step 4b: Extend gradient zone to full weapon icon ──
+            #
+            # The gradient core (~30px) only covers the hue transition.
+            # The weapon icon silhouette extends 25-40px beyond this
+            # on each side.  Apply a proportional extension from the
+            # gradient edges.  The extension is asymmetric: the icon
+            # tends to extend further LEFT (toward the killer name)
+            # than RIGHT (toward the victim name).
+            grad_gap = weapon_right - weapon_left
+            extend_left = max(30, int(grad_gap * 1.0))   # ~30px at typical grad_gap=30
+            extend_right = max(25, int(grad_gap * 0.8))
+
+            ext_left = max(safe_left, weapon_left - extend_left)
+            ext_right = min(safe_right, weapon_right + extend_right)
+
+            left_bound = ext_left
+            right_bound = ext_right
+
+            # ── Step 5: Enforce min/max crop width ──
             crop_w = right_bound - left_bound
-            MIN_CROP = 80
-            MAX_CROP = int(w * 0.40)
+            MIN_CROP = 50
+            MAX_CROP = int(w * 0.28)
 
             if crop_w < MIN_CROP:
-                # Expand leftward from crossing to reach minimum width
-                left_bound = max(0, right_bound - MIN_CROP)
+                # Centre a MIN_CROP window on the crossing
+                mid = best_cross
+                left_bound = max(0, mid - MIN_CROP // 2)
+                right_bound = min(w, left_bound + MIN_CROP)
             elif crop_w > MAX_CROP:
-                left_bound = max(0, right_bound - MAX_CROP)
+                # Trim symmetrically toward the crossing
+                mid = (left_bound + right_bound) // 2
+                left_bound = max(0, mid - MAX_CROP // 2)
+                right_bound = min(w, left_bound + MAX_CROP)
 
-            # Small padding
-            pad = max(2, int((right_bound - left_bound) * 0.06))
+            # Generous padding so edges of weapon aren't clipped
+            pad = max(6, int((right_bound - left_bound) * 0.10))
             x0 = max(0, left_bound - pad)
             x1 = min(w, right_bound + pad)
 
@@ -3589,7 +3675,6 @@ class KillfeedDetector(BaseDetector):
 
         except Exception:
             return None
-
 
     def _center_fallback_crop(self, row_img: np.ndarray) -> Optional[np.ndarray]:
         """Fallback: return a conservative center crop when gap detection fails."""
