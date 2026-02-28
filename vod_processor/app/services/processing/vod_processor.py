@@ -56,6 +56,27 @@ class RateGate:
         return False
 
 
+def _build_orange_mask(hsv: np.ndarray) -> np.ndarray:
+    """Build a complete orange mask that includes both hue ranges.
+    
+    Orange/red hues wrap around 0 in HSV:
+      Primary:   H in [0, 25]  (standard orange)
+      Secondary: H in [160, 180] (red/pink/magenta)
+    Both ranges are needed to capture all orange-family colours in the
+    broadcast (including self-kill rows that may have shifted hues).
+    """
+    mask1 = cv2.inRange(hsv,
+                        np.array(TEAM_COLORS["orange"]["lower"]),
+                        np.array(TEAM_COLORS["orange"]["upper"]))
+    # Include secondary range if defined
+    if "lower2" in TEAM_COLORS["orange"] and "upper2" in TEAM_COLORS["orange"]:
+        mask2 = cv2.inRange(hsv,
+                            np.array(TEAM_COLORS["orange"]["lower2"]),
+                            np.array(TEAM_COLORS["orange"]["upper2"]))
+        mask1 = cv2.bitwise_or(mask1, mask2)
+    return mask1
+
+
 def roi_to_px(frame_w: int, frame_h: int, roi_norm: Tuple[float, float, float, float]) -> Tuple[int, int, int, int]:
     """Convert normalized ROI coordinates to pixel coordinates."""
     x, y, w, h = roi_norm
@@ -392,8 +413,24 @@ class VODProcessor:
                     prev_frame_state = frame_state
                 
                 # Skip non-gameplay frames
+                # NOTE: The killfeed detector is STILL run during REPLAY frames
+                # because false-positive REPLAY detection (e.g., from CLUTCH overlays)
+                # can cause real kills (self-kills, fall damage) to be missed.
+                # The killfeed detector has its own dedup logic (per-round victim
+                # tracking, REPLAY lookback filter, similarity checks) that
+                # handles actual replay killfeed entries safely.
                 if frame_state == "REPLAY":
                     skipped_replay_frames += 1
+                    # Still run the killfeed detector during REPLAY
+                    for detector in detectors:
+                        if isinstance(detector, KillfeedDetector):
+                            roi_name = detector.roi_name
+                            if roi_name in roi_px_cache:
+                                roi_px = roi_px_cache[roi_name]
+                                roi_frame = crop(frame, roi_px)
+                                if roi_frame.size > 0:
+                                    replay_events = detector.process(t_ms, roi_frame)
+                                    all_events.extend(replay_events)
                     frame_idx += 1
                     continue
                 elif frame_state == "TRANSITION":
@@ -1172,6 +1209,69 @@ class VODProcessor:
         
         return left_team, right_team, left_candidates, right_candidates
     
+    def _find_team_by_hud_names(self, hud_names: List[str]) -> tuple:
+        """Query the database directly to find which team a set of HUD player
+        names belongs to.  Returns (team_tag, match_count) with the most
+        matching players, or (None, 0) if no matches found.
+        
+        This is the nuclear fallback: when OCR-derived tag candidates all fail
+        player-overlap checks, we bypass the tag entirely and let the player
+        names speak for themselves.
+        """
+        import psycopg2
+        # Filter to names that look like real player names (>= 3 chars, mostly alpha)
+        valid_names = []
+        for n in hud_names:
+            stripped = n.strip()
+            if len(stripped) < 3:
+                continue
+            alpha_ratio = sum(1 for c in stripped if c.isalpha()) / len(stripped)
+            if alpha_ratio < 0.5:
+                continue
+            valid_names.append(stripped.lower())
+        
+        if not valid_names:
+            return None
+        
+        try:
+            host = os.environ.get('POSTGRES_HOST', 'localhost')
+            if host == 'postgres':
+                host = 'host.docker.internal'
+            conn = psycopg2.connect(
+                host=host,
+                port=int(os.environ.get('POSTGRES_PORT', 5432)),
+                user=os.environ.get('POSTGRES_USER', 'postgres'),
+                password=os.environ.get('POSTGRES_PASSWORD', ''),
+                dbname=os.environ.get('POSTGRES_DB', 'cloud9'),
+            )
+            cur = conn.cursor()
+            placeholders = ','.join(['%s'] * len(valid_names))
+            query = (
+                f"SELECT UPPER(t.team_tag), COUNT(DISTINCT LOWER(p.nickname)) "
+                f"FROM esports_players p "
+                f"JOIN esports_teams t ON p.team_id = t.id "
+                f"WHERE LOWER(p.nickname) IN ({placeholders}) "
+                f"GROUP BY t.team_tag "
+                f"ORDER BY 2 DESC LIMIT 5"
+            )
+            cur.execute(query, valid_names)
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+            
+            if rows:
+                print(f"[TeamValidation] DB player-name search results: {rows}")
+                best_tag, best_count = rows[0]
+                if best_count >= 2:
+                    return best_tag, best_count
+                # If only 1 match and it's clearly the best, still accept
+                if best_count == 1 and (len(rows) == 1 or rows[1][1] < best_count):
+                    return best_tag, best_count
+            return None, 0
+        except Exception as e:
+            print(f"[TeamValidation] DB player-name search failed: {e}")
+            return None, 0
+
     def _validate_team_via_players(
         self,
         job_id: str,
@@ -1183,26 +1283,27 @@ class VODProcessor:
         """Validate detected teams by extracting HUD player names and checking
         against each candidate team's player pool from the database.
         
-        If the current best-pick team has NO player overlap but an alternative
-        candidate does, switch to the alternative.  This handles OCR confusion
-        cases like TL/IL/1L where the wrong real team may outscore the correct
-        one in character-level voting.
+        Two-phase approach:
+        1. For ambiguous sides (close candidate scores), check top candidates'
+           rosters against HUD names — handles OCR confusion like TL/IL/1L.
+        2. For ALL sides, verify the final team has player overlap. If not,
+           run a database-wide player-name search as a nuclear fallback.
         """
         from vod_processor.app.services.db.db_player_matcher import load_match_players_from_db
         
-        # Quick extraction of HUD player names for validation
-        # We'll do a lightweight scan: grab one frame, read the 5 player-name
-        # slots on each side and compare against candidate team rosters.
+        # Always extract HUD names — we need them for both phases
+        hud_names = self._quick_extract_hud_names(cap, fps)
+        if not hud_names['left'] and not hud_names['right']:
+            print("[TeamValidation] Could not extract any HUD names, skipping validation")
+            return
         
-        # We need the existing player pools (already loaded for best picks)
-        left_pool = self._left_player_pool or []
-        right_pool = self._right_player_pool or []
+        print(f"[TeamValidation] HUD names — left: {hud_names['left']}, right: {hud_names['right']}")
         
-        # Only validate sides that have close candidates (score gap < 15%)
+        # ── Phase 1: Candidate-based validation (ambiguous sides only) ──
         sides_to_check = []
-        for side, candidates, pool, code_attr in [
-            ('left', left_candidates, left_pool, '_left_team_code'),
-            ('right', right_candidates, right_pool, '_right_team_code'),
+        for side, candidates, code_attr in [
+            ('left', left_candidates, '_left_team_code'),
+            ('right', right_candidates, '_right_team_code'),
         ]:
             if len(candidates) < 2:
                 continue
@@ -1212,24 +1313,13 @@ class VODProcessor:
                 continue
             gap_pct = (best_score - runner_up_score) / best_score
             if gap_pct < 0.20:  # Top two are within 20%
-                sides_to_check.append((side, candidates, pool, code_attr))
+                sides_to_check.append((side, candidates, code_attr))
                 print(f"[TeamValidation] {side} team ambiguous — "
                       f"top={candidates[0][0]}({best_score:.1f}) vs "
                       f"runner={candidates[1][0]}({runner_up_score:.1f}), "
                       f"gap={gap_pct:.0%}")
         
-        if not sides_to_check:
-            return  # All picks are confident enough
-        
-        # Extract player names from HUD (lightweight: just 3 frames)
-        hud_names = self._quick_extract_hud_names(cap, fps)
-        if not hud_names['left'] and not hud_names['right']:
-            print("[TeamValidation] Could not extract any HUD names, skipping validation")
-            return
-        
-        print(f"[TeamValidation] HUD names — left: {hud_names['left']}, right: {hud_names['right']}")
-        
-        for side, candidates, pool, code_attr in sides_to_check:
+        for side, candidates, code_attr in sides_to_check:
             current_tag = candidates[0][0]
             side_names = hud_names.get(side, [])
             if not side_names:
@@ -1270,15 +1360,11 @@ class VODProcessor:
                     best_match_tag = tag
             
             if best_match_tag != current_tag and best_match_count > 0:
-                print(f"[TeamValidation] {side} team CORRECTED: "
+                print(f"[TeamValidation] {side} team CORRECTED (phase 1): "
                       f"'{current_tag}' -> '{best_match_tag}' "
                       f"(player overlap: {best_match_count}/{len(side_names)})")
-                
-                # Update team code and player pool
                 setattr(self, code_attr, best_match_tag)
                 setattr(self._player_matcher, code_attr, best_match_tag)
-                
-                # Reload player pool for corrected team
                 try:
                     if side == 'left':
                         new_pool, _ = load_match_players_from_db(best_match_tag, "")
@@ -1290,6 +1376,65 @@ class VODProcessor:
                         print(f"[{job_id}] Reloaded {len(self._right_player_pool)} players for {best_match_tag}")
                 except Exception as e:
                     print(f"[TeamValidation] Failed to reload pool for '{best_match_tag}': {e}")
+        
+        # ── Phase 2: Nuclear fallback — DB-wide player-name search ──
+        # For each side, verify the current team actually has player overlap.
+        # If not, search ALL teams in the database by player name.
+        print(f"[TeamValidation] Entering Phase 2 — checking {len(hud_names.get('left',[]))} left / {len(hud_names.get('right',[]))} right HUD names")
+        for side, code_attr, pool_attr in [
+            ('left', '_left_team_code', '_left_player_pool'),
+            ('right', '_right_team_code', '_right_player_pool'),
+        ]:
+            current_tag = getattr(self, code_attr, None)
+            current_pool = getattr(self, pool_attr, None) or []
+            side_names = hud_names.get(side, [])
+            
+            if not side_names or not current_tag:
+                continue
+            
+            # Check if current team has any overlap with HUD names
+            pool_lower = [p.lower() for p in current_pool]
+            overlap = 0
+            for name in side_names:
+                name_lower = name.lower()
+                for pool_name in pool_lower:
+                    if name_lower == pool_name or name_lower in pool_name or pool_name in name_lower:
+                        overlap += 1
+                        break
+            
+            if overlap >= 2:
+                print(f"[TeamValidation] {side} team '{current_tag}' verified: "
+                      f"{overlap}/{len(side_names)} HUD names match roster")
+                continue
+            
+            # Weak or no overlap — run DB-wide search to see if a better team exists
+            if overlap == 0:
+                print(f"[TeamValidation] {side} team '{current_tag}' has 0 player overlap "
+                      f"with HUD names — running DB-wide player search...")
+            else:
+                print(f"[TeamValidation] {side} team '{current_tag}' has weak overlap "
+                      f"({overlap}/{len(side_names)}) — running DB-wide player search to verify...")
+            
+            found_tag, found_count = self._find_team_by_hud_names(side_names)
+            if found_tag and found_tag != current_tag and found_count > overlap:
+                print(f"[TeamValidation] {side} team CORRECTED (phase 2 DB search): "
+                      f"'{current_tag}' -> '{found_tag}' ({found_count} DB matches vs {overlap} current)")
+                setattr(self, code_attr, found_tag)
+                setattr(self._player_matcher, code_attr, found_tag)
+                try:
+                    if side == 'left':
+                        new_pool, _ = load_match_players_from_db(found_tag, "")
+                        self._left_player_pool = new_pool or []
+                        print(f"[{job_id}] Reloaded {len(self._left_player_pool)} players for {found_tag}")
+                    else:
+                        _, new_pool = load_match_players_from_db("", found_tag)
+                        self._right_player_pool = new_pool or []
+                        print(f"[{job_id}] Reloaded {len(self._right_player_pool)} players for {found_tag}")
+                except Exception as e:
+                    print(f"[TeamValidation] Failed to reload pool for '{found_tag}': {e}")
+            else:
+                print(f"[TeamValidation] {side} DB-wide search found no better match "
+                      f"(result={found_tag}), keeping '{current_tag}'")
     
     def _quick_extract_hud_names(
         self, cap: cv2.VideoCapture, fps: float
@@ -2137,8 +2282,8 @@ class FrameStateDetector:
         teal_mask = cv2.inRange(hsv, (75, 80, 100), (105, 255, 255))
         teal_ratio = np.sum(teal_mask > 0) / teal_mask.size
         
-        # Check for orange (H: 0-25)
-        orange_mask = cv2.inRange(hsv, (0, 80, 100), (25, 255, 255))
+        # Check for orange (including secondary red/pink range)
+        orange_mask = _build_orange_mask(hsv)
         orange_ratio = np.sum(orange_mask > 0) / orange_mask.size
         
         # Should have at least some team color pixels
@@ -2567,24 +2712,36 @@ class KillfeedDetector(BaseDetector):
                 return []  # Still in cooldown - reject potential replay kills
         
         self._cleanup_signatures(t_ms)
+        # ---- DEBUG: trace self-kill window ----
+        _DBG_SELF = 1440000 <= t_ms <= 1475000
+        if _DBG_SELF:
+            print(f"[DBG-SELF] t={t_ms/1000:.1f}s _detect ENTERED")
         # Skip expensive OCR if killfeed hasn't changed
         if not self._has_significant_change(roi_frame):
+            if _DBG_SELF:
+                print(f"[DBG-SELF] t={t_ms/1000:.1f}s SKIPPED by _has_significant_change")
             return []
         events = []
         h, w = roi_frame.shape[:2]
         # Segment rows using fixed positions for consistent extraction
+        self._dbg_self = _DBG_SELF
         rows = self._segment_rows_fixed(roi_frame)
+        if _DBG_SELF:
+            print(f"[DBG-SELF] t={t_ms/1000:.1f}s _segment_rows_fixed returned {len(rows)} rows: {[(r[0], r[1], r[2]) for r in rows]}")
         
         KILLFEED_DISPLAY_WINDOW_MS = 5000  # Kills stay visible for 5s
         for actual_row_idx, y_start, y_end, row_img in rows:
             # Per-row change detection - skip OCR if this row hasn't changed
             row_hash = self._compute_row_hash(row_img)
             if actual_row_idx in self._row_hashes and self._row_hashes[actual_row_idx] == row_hash:
+                if _DBG_SELF:
+                    print(f"[DBG-SELF] t={t_ms/1000:.1f}s ROW {actual_row_idx} skipped (row hash unchanged)")
                 continue  # Row unchanged, skip expensive OCR
             self._row_hashes[actual_row_idx] = row_hash
             
             entry = self._parse_row(row_img)
-
+            if _DBG_SELF:
+                print(f"[DBG-SELF] t={t_ms/1000:.1f}s ROW {actual_row_idx} _parse_row -> {entry}")
             if not entry:
                 continue
             
@@ -2661,8 +2818,14 @@ class KillfeedDetector(BaseDetector):
                 # Past buffer - kill belongs to current round
                 display_round = self._current_round_number
             
+            # Detect self-kill (fall damage, etc.) - killer and victim are the same player
+            is_self_kill = (killer_name_normalized.lower().strip() == victim_name_normalized.lower().strip())
+
             # Log the accepted kill - just player names, no team prefix (OCR may include it)
-            print(f"[KILL] t={t_ms/1000:.1f}s R{display_round} ROW {actual_row_idx+1}: {killer_name_normalized} killed {victim_name_normalized}")
+            if is_self_kill:
+                print(f"[KILL] t={t_ms/1000:.1f}s R{display_round} ROW {actual_row_idx+1}: {killer_name_normalized} SELF-KILL (fall damage)")
+            else:
+                print(f"[KILL] t={t_ms/1000:.1f}s R{display_round} ROW {actual_row_idx+1}: {killer_name_normalized} killed {victim_name_normalized}")
 
             # Track this victim's death for per-round deduplication
             victim_key = victim_name_normalized.lower().strip() if victim_name_normalized != "Unknown" else None
@@ -2702,6 +2865,7 @@ class KillfeedDetector(BaseDetector):
                     "victim_team": victim_team,
                     "weapon": entry.get("weapon", "unknown"),
                     "is_headshot": entry.get("is_headshot", False),
+                    "is_self_kill": is_self_kill,
                 },
                 confidence=confidence
             )
@@ -3068,9 +3232,7 @@ class KillfeedDetector(BaseDetector):
         teal_mask = cv2.inRange(hsv, 
                                 np.array(TEAM_COLORS["teal"]["lower"]),
                                 np.array(TEAM_COLORS["teal"]["upper"]))
-        orange_mask = cv2.inRange(hsv,
-                                  np.array(TEAM_COLORS["orange"]["lower"]),
-                                  np.array(TEAM_COLORS["orange"]["upper"]))
+        orange_mask = _build_orange_mask(hsv)
         
         color_mask = cv2.bitwise_or(teal_mask, orange_mask)
         
@@ -3133,6 +3295,12 @@ class KillfeedDetector(BaseDetector):
         MIN_COLOR_PIXELS_MINORITY = 50  # The minority color needs at least this many pixels
         MIN_COLOR_DENSITY_EXTENDED = 0.01  # At least 1% of row should be team color
         
+        # Self-kill detection: A single-color row is valid if the colour
+        # appears in TWO separate horizontal blobs (killer bg + victim bg)
+        # with a visible gap in between (the weapon-icon zone).
+        SELF_KILL_MIN_SINGLE_COLOR = 200   # need plenty of the one colour
+        SELF_KILL_MIN_GAP_PX = 15          # gap between the two blobs
+        
         # First pass: check ALL rows and determine which have content
         for i in range(KILLFEED_EXTENDED_ROWS):
             y_start = i * row_height
@@ -3146,30 +3314,52 @@ class KillfeedDetector(BaseDetector):
             teal_mask = cv2.inRange(hsv, 
                                     np.array(TEAM_COLORS["teal"]["lower"]),
                                     np.array(TEAM_COLORS["teal"]["upper"]))
-            orange_mask = cv2.inRange(hsv,
-                                      np.array(TEAM_COLORS["orange"]["lower"]),
-                                      np.array(TEAM_COLORS["orange"]["upper"]))
+            orange_mask = _build_orange_mask(hsv)
             
             teal_pixels = cv2.countNonZero(teal_mask)
             orange_pixels = cv2.countNonZero(orange_mask)
+            
+            # ---- DEBUG self-kill window ----
+            _dbg = getattr(self, '_dbg_self', False)
+            if _dbg:
+                print(f"[DBG-SEG] row={i} teal={teal_pixels} orange={orange_pixels} total={total_pixels}")
             
             # Calculate color density (fraction of row covered by team colors)
             color_density = (teal_pixels + orange_pixels) / total_pixels
             row_color_density[i] = color_density
             
-            # Must have BOTH teal and orange colors for a valid kill entry
+            # Normal kill: BOTH teal and orange present
             # (killer name = one color, victim name = other color)
-            # The majority color (larger text area) should have substantial pixels
-            # The minority color should also be meaningful (not just noise)
             majority_pixels = max(teal_pixels, orange_pixels)
             minority_pixels = min(teal_pixels, orange_pixels)
             
-            has_sufficient_colors = (
+            has_both_colors = (
                 majority_pixels > MIN_COLOR_PIXELS_PRIMARY and 
                 minority_pixels > MIN_COLOR_PIXELS_MINORITY
             )
             
-            if has_sufficient_colors:
+            # Self-kill / fall-damage: Only ONE team colour, but it must
+            # appear in two separate horizontal regions with a gap.
+            has_single_color_two_blobs = False
+            if not has_both_colors and majority_pixels >= SELF_KILL_MIN_SINGLE_COLOR:
+                dominant_mask = teal_mask if teal_pixels >= orange_pixels else orange_mask
+                regions = self._find_color_regions(dominant_mask)
+                if _dbg:
+                    print(f"[DBG-SEG] row={i} self-kill check: regions={len(regions)} bboxes={[(r[0],r[2]) for r in regions]}")
+                if len(regions) >= 2:
+                    regions_sorted = sorted(regions, key=lambda r: r[0])  # sort by x
+                    leftmost = regions_sorted[0]
+                    rightmost = regions_sorted[-1]
+                    gap = rightmost[0] - (leftmost[0] + leftmost[2])  # x2_start - x1_end
+                    if _dbg:
+                        print(f"[DBG-SEG] row={i} gap={gap} (leftmost x={leftmost[0]} w={leftmost[2]}, rightmost x={rightmost[0]})")
+                    if gap >= SELF_KILL_MIN_GAP_PX:
+                        has_single_color_two_blobs = True
+            
+            if _dbg:
+                print(f"[DBG-SEG] row={i} has_both={has_both_colors} has_single_two_blobs={has_single_color_two_blobs} -> {'CONTENT' if has_both_colors or has_single_color_two_blobs else 'EMPTY'}")
+            
+            if has_both_colors or has_single_color_two_blobs:
                 rows_with_content.add(i)
         
         # Early exit: if no rows have content, return empty
@@ -3245,17 +3435,19 @@ class KillfeedDetector(BaseDetector):
         return rows
 
     def _parse_row(self, row_img: np.ndarray) -> Optional[Dict[str, Any]]:
-        """Parse a killfeed row to extract kill information."""
+        """Parse a killfeed row to extract kill information.
+        
+        Handles both normal kills (two different team colours) and
+        self-kills / fall damage (same colour on both sides).
+        """
         h, w = row_img.shape[:2]
         hsv = cv2.cvtColor(row_img, cv2.COLOR_BGR2HSV)
         
-        # Detect team colors
+        # Detect team colors (use full orange mask including secondary hue range)
         teal_mask = cv2.inRange(hsv,
                                 np.array(TEAM_COLORS["teal"]["lower"]),
                                 np.array(TEAM_COLORS["teal"]["upper"]))
-        orange_mask = cv2.inRange(hsv,
-                                  np.array(TEAM_COLORS["orange"]["lower"]),
-                                  np.array(TEAM_COLORS["orange"]["upper"]))
+        orange_mask = _build_orange_mask(hsv)
         
         teal_pixels = cv2.countNonZero(teal_mask)
         orange_pixels = cv2.countNonZero(orange_mask)
@@ -3280,6 +3472,7 @@ class KillfeedDetector(BaseDetector):
             return None
         
         # In killfeed: leftmost color = killer team, rightmost = victim team
+        # For self-kills (fall damage), both sides are the same colour.
         killer_team = all_regions[0]["color"]
         victim_team = all_regions[-1]["color"]
         
@@ -3803,14 +3996,17 @@ class TopHUDDetector(BaseDetector):
         h, w = roi_frame.shape[:2]
         top_hud_x, top_hud_y = 0.335, 0.005
         top_hud_w, top_hud_h = 0.330, 0.200
-        left_norm_x = (0.417 - top_hud_x) / top_hud_w
-        left_norm_y = (0.009 - top_hud_y) / top_hud_h
-        left_norm_w = 0.036 / top_hud_w
-        left_norm_h = 0.042 / top_hud_h
-        right_norm_x = (0.555 - top_hud_x) / top_hud_w
-        right_norm_y = (0.009 - top_hud_y) / top_hud_h
-        right_norm_w = 0.036 / top_hud_w
-        right_norm_h = 0.042 / top_hud_h
+        # Read score ROI coordinates from ROI_CONFIG (settings.py) instead of hardcoding
+        ls = ROI_CONFIG.get("top_left_score", (0.417, 0.009, 0.036, 0.055))
+        rs = ROI_CONFIG.get("top_right_score", (0.555, 0.009, 0.036, 0.055))
+        left_norm_x = (ls[0] - top_hud_x) / top_hud_w
+        left_norm_y = (ls[1] - top_hud_y) / top_hud_h
+        left_norm_w = ls[2] / top_hud_w
+        left_norm_h = ls[3] / top_hud_h
+        right_norm_x = (rs[0] - top_hud_x) / top_hud_w
+        right_norm_y = (rs[1] - top_hud_y) / top_hud_h
+        right_norm_w = rs[2] / top_hud_w
+        right_norm_h = rs[3] / top_hud_h
         left_x = int(left_norm_x * w)
         left_y = int(left_norm_y * h)
         score_w = max(int(left_norm_w * w), 40)

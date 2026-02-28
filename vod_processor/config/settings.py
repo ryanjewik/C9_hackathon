@@ -78,17 +78,17 @@ ROI_CONFIG: Dict[str, Tuple[float, float, float, float]] = {
 
     # Top HUD
     "top_hud": (0.335, 0.005, 0.330, 0.200),
-    "top_left_score": (0.417, 0.009, 0.036, 0.042),
+    "top_left_score": (0.417, 0.009, 0.036, 0.055),
     "top_center_timer": (0.465, 0.010, 0.070, 0.045),
-    "top_right_score": (0.555, 0.009, 0.036, 0.042),
+    "top_right_score": (0.555, 0.009, 0.036, 0.055),
     "top_spike_icon": (0.485, 0.065, 0.035, 0.058),
     "top_plant_text": (0.43, 0.127, 0.14, 0.070),
     
     # Team tags on top HUD - these show team abbreviations (e.g., "TH", "PRX")
     # Calibrated to capture just the text, excluding team logo icons
     # Left shifted right by 10px to avoid logo overlap, uses smaller width
-    "top_left_team_tag": (0.382, 0.007, 0.035, 0.028),   # Left team tag (e.g., TH)
-    "top_right_team_tag": (0.587, 0.007, 0.040, 0.028),  # Right team tag (e.g., PRX)
+    "top_left_team_tag": (0.379, 0.007, 0.038, 0.043),   # Left team tag (e.g., TH)
+    "top_right_team_tag": (0.587, 0.007, 0.040, 0.043),  # Right team tag (e.g., PRX)
 
     # Kill feed - y=0.092 (~99px) aligns ROW 1 with first kill entry
     # h=0.318 (~343px) gives 38px per row to match actual kill entry spacing
