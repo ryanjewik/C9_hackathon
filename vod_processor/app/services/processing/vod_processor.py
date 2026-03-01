@@ -362,6 +362,8 @@ class VODProcessor:
             sample_interval = max(1, int(fps / self.settings.frame_sample_fps))
             skipped_replay_frames = 0
             skipped_transition_frames = 0
+            skipped_prematch_frames = 0
+            match_started = False
             prev_frame_state = "GAMEPLAY"
             
             self._job_manager.update_job_status(
@@ -404,8 +406,8 @@ class VODProcessor:
                     ))
                     
                     # Notify KillfeedDetector when entering REPLAY mode
-                    # This allows it to filter out kills that happened just before the replay
-                    if frame_state == "REPLAY" and prev_frame_state == "GAMEPLAY":
+                    # This triggers a lookback filter to remove kills just before replay started
+                    if frame_state == "REPLAY" and prev_frame_state != "REPLAY":
                         for d in detectors:
                             if hasattr(d, 'on_replay_detected'):
                                 d.on_replay_detected(t_ms)
@@ -413,24 +415,10 @@ class VODProcessor:
                     prev_frame_state = frame_state
                 
                 # Skip non-gameplay frames
-                # NOTE: The killfeed detector is STILL run during REPLAY frames
-                # because false-positive REPLAY detection (e.g., from CLUTCH overlays)
-                # can cause real kills (self-kills, fall damage) to be missed.
-                # The killfeed detector has its own dedup logic (per-round victim
-                # tracking, REPLAY lookback filter, similarity checks) that
-                # handles actual replay killfeed entries safely.
+                # REPLAY: Any overlay text visible (REPLAY/CLUTCH/THRIFTY/FLAWLESS)
+                #         means replay/highlight footage — skip killfeed entirely
                 if frame_state == "REPLAY":
                     skipped_replay_frames += 1
-                    # Still run the killfeed detector during REPLAY
-                    for detector in detectors:
-                        if isinstance(detector, KillfeedDetector):
-                            roi_name = detector.roi_name
-                            if roi_name in roi_px_cache:
-                                roi_px = roi_px_cache[roi_name]
-                                roi_frame = crop(frame, roi_px)
-                                if roi_frame.size > 0:
-                                    replay_events = detector.process(t_ms, roi_frame)
-                                    all_events.extend(replay_events)
                     frame_idx += 1
                     continue
                 elif frame_state == "TRANSITION":
@@ -438,7 +426,26 @@ class VODProcessor:
                     frame_idx += 1
                     continue
                 
-                # Run detectors (only during GAMEPLAY)
+                # Gate: skip killfeed detection until match starts (0-0 score confirmed)
+                if not match_started:
+                    if top_hud_detector and top_hud_detector.has_confirmed_zero_zero():
+                        match_started = True
+                        print(f"[PROC] Match started at t={t_ms/1000:.1f}s — enabling killfeed detection", flush=True)
+                    else:
+                        # Still run TopHUD detector to look for 0-0 score, but skip killfeed
+                        skipped_prematch_frames += 1
+                        for detector in detectors:
+                            if isinstance(detector, type(top_hud_detector)):
+                                roi_name = detector.roi_name
+                                if roi_name in roi_px_cache:
+                                    roi_px = roi_px_cache[roi_name]
+                                    roi_frame = crop(frame, roi_px)
+                                    if roi_frame.size > 0:
+                                        detector.process(t_ms, roi_frame)
+                        frame_idx += 1
+                        continue
+                
+                # Run detectors (only during GAMEPLAY after match started)
                 frame_events = []
                 for detector in detectors:
                     roi_name = detector.roi_name
@@ -549,8 +556,8 @@ class VODProcessor:
                 json.dump(summary, f, indent=2)
             
             # Log skipped frames
-            if skipped_replay_frames > 0 or skipped_transition_frames > 0:
-                print(f"[{job_id}] Skipped frames - Replay: {skipped_replay_frames}, Transition: {skipped_transition_frames}")
+            if skipped_replay_frames > 0 or skipped_transition_frames > 0 or skipped_prematch_frames > 0:
+                print(f"[{job_id}] Skipped frames - Prematch: {skipped_prematch_frames}, Replay: {skipped_replay_frames}, Transition: {skipped_transition_frames}")
             
             # Update job status
             self._job_manager.update_job_status(
@@ -2090,6 +2097,7 @@ class FrameStateDetector:
     """
     
     # How long to persist REPLAY state after detection (in frames at ~6fps = ~2 seconds)
+    # Short persist to bridge frames where OCR misses between detections.
     REPLAY_PERSIST_FRAMES = 12
     
     def __init__(self):
@@ -2127,18 +2135,19 @@ class FrameStateDetector:
         
         Returns:
             "GAMEPLAY" - Normal gameplay, process events
-            "REPLAY" - Replay mode, skip killfeed to avoid duplicates
+            "REPLAY" - Overlay text visible (REPLAY/CLUTCH/THRIFTY/FLAWLESS), skip killfeed
             "TRANSITION" - Non-gameplay screen, skip all processing
         """
-        # Check for REPLAY or CLUTCH indicator (skip killfeed during these overlays)
-        detected_replay = self._detect_replay_or_clutch_text(replay_roi, t_ms)
+        # Check for any overlay text (REPLAY, CLUTCH, THRIFTY, FLAWLESS)
+        # ALL overlay text means we're in replay/highlight footage — skip killfeed
+        detected = self._detect_replay_or_clutch_text(replay_roi, t_ms)
         
-        if detected_replay:
+        if detected:
             # Reset persist counter on fresh detection
             self._replay_persist_counter = self.REPLAY_PERSIST_FRAMES
             return "REPLAY"
         
-        # If we detected REPLAY recently, persist the state for a few more frames
+        # If we detected overlay text recently, persist REPLAY state for a few more frames
         # This handles cases where OCR misses a frame but replay is still showing
         if self._replay_persist_counter > 0:
             self._replay_persist_counter -= 1
@@ -2152,17 +2161,10 @@ class FrameStateDetector:
     
     def _detect_replay_or_clutch_text(self, replay_roi: np.ndarray, t_ms: float = 0) -> bool:
         """
-        Detect if overlay text is visible in the bottom-right corner that indicates
-        we should skip killfeed processing.
+        Detect if overlay text is visible in the bottom-right corner.
         
-        Detected overlays:
-        - REPLAY: Obviously replay footage
-        - CLUTCH: Shown during replay highlights of clutch moments
-        - THRIFTY: Shown when a team wins while spending less money
-        - FLAWLESS: Shown when a team wins without anyone dying
-        
-        All these overlays indicate segments where we should skip killfeed
-        processing to avoid duplicate detection during replays.
+        ANY overlay text (REPLAY, CLUTCH, THRIFTY, FLAWLESS) means we're in
+        replay/highlight footage and should skip killfeed processing.
         
         Returns True if any overlay text is detected.
         """
@@ -2180,6 +2182,9 @@ class FrameStateDetector:
         white_ratio = np.sum(thresh > 0) / thresh.size
         
         # If there's some white content, try OCR (lowered threshold from 0.05 to 0.02)
+        _dbg_replay = (1280000 < t_ms < 1370000) or (1440000 < t_ms < 1480000) or (1935000 < t_ms < 1960000) or (2050000 < t_ms < 2090000)
+        if _dbg_replay and not (white_ratio > 0.02 and white_ratio < 0.7):
+            print(f"[REPLAY-DBG] t={t_ms/1000:.1f}s SKIPPED OCR: white_ratio={white_ratio:.3f} h={h} w={w}")
         if white_ratio > 0.02 and white_ratio < 0.7:
             self._init_ocr()
             if self._ocr_reader:
@@ -2190,18 +2195,26 @@ class FrameStateDetector:
                         detail=0,
                         paragraph=False,  # Don't merge - we want individual words
                     )
+                    
+                    # DEBUG: Log what OCR sees during known replay windows
+                    _dbg_replay = (1280000 < t_ms < 1370000) or (1440000 < t_ms < 1480000) or (1935000 < t_ms < 1960000) or (2050000 < t_ms < 2090000)
+                    if _dbg_replay and results:
+                        print(f"[REPLAY-DBG] t={t_ms/1000:.1f}s white_ratio={white_ratio:.3f} OCR={results}")
+                    elif _dbg_replay:
+                        print(f"[REPLAY-DBG] t={t_ms/1000:.1f}s white_ratio={white_ratio:.3f} OCR=<empty>")
+                    
                     for text in results:
                         if isinstance(text, str):
                             text_upper = text.upper().replace(" ", "").replace("_", "")
                             
-                            # CLUTCH = skip to avoid replay duplicates
+                            # CLUTCH = replay/highlight overlay
                             if "CLUTCH" in text_upper or "CLUT" in text_upper:
                                 if not self._last_replay_detection_logged:
                                     print(f"[FrameState] CLUTCH detected at t={t_ms/1000:.1f}s - entering REPLAY mode")
                                     self._last_replay_detection_logged = True
                                 return True
                             
-                            # REPLAY = replay footage, skip to avoid duplicates
+                            # REPLAY = replay footage
                             # Also match common OCR errors: REPLA, REPIAY, REPALY
                             if "REPLAY" in text_upper or "REPLA" in text_upper or "REPIAY" in text_upper:
                                 if not self._last_replay_detection_logged:
@@ -2209,14 +2222,14 @@ class FrameStateDetector:
                                     self._last_replay_detection_logged = True
                                 return True
                             
-                            # THRIFTY = round win overlay, often followed by replay
+                            # THRIFTY = round win overlay
                             if "THRIFTY" in text_upper or "THRIFT" in text_upper:
                                 if not self._last_replay_detection_logged:
                                     print(f"[FrameState] THRIFTY detected at t={t_ms/1000:.1f}s - entering REPLAY mode")
                                     self._last_replay_detection_logged = True
                                 return True
                             
-                            # FLAWLESS = round win overlay (no deaths), often followed by replay
+                            # FLAWLESS = round win overlay (no deaths)
                             if "FLAWLESS" in text_upper or "FLAWLES" in text_upper:
                                 if not self._last_replay_detection_logged:
                                     print(f"[FrameState] FLAWLESS detected at t={t_ms/1000:.1f}s - entering REPLAY mode")
@@ -2713,7 +2726,9 @@ class KillfeedDetector(BaseDetector):
         
         self._cleanup_signatures(t_ms)
         # ---- DEBUG: trace self-kill window ----
-        _DBG_SELF = 1440000 <= t_ms <= 1475000
+        # Enable debug for known self-kill timestamps:
+        # R10 fall damage ~1455-1475s, R13 spike ~1940-1960s, R14 spike ~2055-2070s
+        _DBG_SELF = (1455000 < t_ms < 1475000) or (1935000 < t_ms < 1960000) or (2055000 < t_ms < 2070000)
         if _DBG_SELF:
             print(f"[DBG-SELF] t={t_ms/1000:.1f}s _detect ENTERED")
         # Skip expensive OCR if killfeed hasn't changed
@@ -2908,6 +2923,7 @@ class KillfeedDetector(BaseDetector):
         2. FULL MATCH: Same killer+victim within display window = duplicate
         3. PARTIAL MATCH: Either name very similar within tight window
         4. SWAP CHECK: Names swapped (OCR error) = duplicate
+        
         """
         _, killer_team, victim_team, killer_name, victim_name, row_idx = sig
         
@@ -2942,9 +2958,7 @@ class KillfeedDetector(BaseDetector):
             
             # TIER 1: VICTIM-FOCUSED dedup (strongest - player can only die once per round)
             # Same victim within 3 seconds = DEFINITELY a duplicate (scrolling or repeated detection)
-            # Tightened to 3s since we now have OCR correction reducing false matches
             if victim_sim > 0.70 and time_diff < 3000:
-                # Don't require team match - team colors are unreliable
                 return True
             
             # TIER 1b: Very high victim similarity within longer window (exact name match)
@@ -3298,8 +3312,10 @@ class KillfeedDetector(BaseDetector):
         # Self-kill detection: A single-color row is valid if the colour
         # appears in TWO separate horizontal blobs (killer bg + victim bg)
         # with a visible gap in between (the weapon-icon zone).
-        SELF_KILL_MIN_SINGLE_COLOR = 200   # need plenty of the one colour
-        SELF_KILL_MIN_GAP_PX = 15          # gap between the two blobs
+        # Relaxed thresholds to catch spike and fall damage icons which may
+        # be narrower than standard weapon icons.
+        SELF_KILL_MIN_SINGLE_COLOR = 150
+        SELF_KILL_MIN_GAP_PX = 10
         
         # First pass: check ALL rows and determine which have content
         for i in range(KILLFEED_EXTENDED_ROWS):
@@ -3434,6 +3450,53 @@ class KillfeedDetector(BaseDetector):
         
         return rows
 
+    def _ocr_killfeed_row(self, row_img: np.ndarray, row_width: int) -> List[Dict[str, Any]]:
+        """Run OCR on a killfeed row image and return sorted name entries.
+        
+        Returns a list of dicts: [{name, x, x_left, x_right, conf}, ...]
+        sorted by x position (left to right).
+        """
+        scale = 2  # All OCR preprocessing uses 2x scale
+
+        if hasattr(self._ocr_reader, 'read_text_multipass'):
+            multipass_results = self._ocr_reader.read_text_multipass(
+                row_img,
+                min_confidence=0.2,
+                strategies=['contrast']
+            )
+            results = [(r.bbox, r.text, r.confidence) for r in multipass_results]
+        elif hasattr(self._ocr_reader, 'read_text'):
+            scaled = cv2.resize(row_img, None, fx=scale, fy=scale,
+                               interpolation=cv2.INTER_LINEAR)
+            ocr_results = self._ocr_reader.read_text(scaled, min_confidence=0.3)
+            results = [(r.bbox, r.text, r.confidence) for r in ocr_results]
+        else:
+            scaled = cv2.resize(row_img, None, fx=scale, fy=scale,
+                               interpolation=cv2.INTER_LINEAR)
+            results = self._ocr_reader.readtext(scaled, paragraph=False)
+
+        names = []
+        for bbox, text, conf in results:
+            if conf > 0.2 and len(text.strip()) >= 2:
+                if isinstance(bbox, tuple) and len(bbox) == 4:
+                    x_center = (bbox[0] + bbox[2] / 2) / scale
+                    x_left = bbox[0] / scale
+                    x_right = (bbox[0] + bbox[2]) / scale
+                else:
+                    x_center = (bbox[0][0] + bbox[2][0]) / 2 / scale
+                    x_left = min(bbox[0][0], bbox[3][0]) / scale
+                    x_right = max(bbox[1][0], bbox[2][0]) / scale
+                names.append({
+                    "name": text.strip(),
+                    "x": x_center,
+                    "x_left": x_left,
+                    "x_right": x_right,
+                    "conf": conf,
+                })
+
+        names.sort(key=lambda n: n["x"])
+        return names
+
     def _parse_row(self, row_img: np.ndarray) -> Optional[Dict[str, Any]]:
         """Parse a killfeed row to extract kill information.
         
@@ -3476,69 +3539,28 @@ class KillfeedDetector(BaseDetector):
         killer_team = all_regions[0]["color"]
         victim_team = all_regions[-1]["color"]
         
+        # Detect same-colour layout (self-kill / fall damage / spike)
+        is_same_color = (killer_team == victim_team)
+
         # Try OCR for names
         killer_name = "Unknown"
         victim_name = "Unknown"
+        names = []  # Will be populated by OCR; needed later for text boundaries
         
         self._init_ocr()
         if self._ocr_reader:
             try:
-                # SPEED OPTIMIZATION: Single-pass OCR with contrast only (fastest)
-                if hasattr(self._ocr_reader, 'read_text_multipass'):
-                    # Single-pass OCR - contrast only for speed
-                    multipass_results = self._ocr_reader.read_text_multipass(
-                        row_img, 
-                        min_confidence=0.2,
-                        strategies=['contrast']  # Single pass for speed
-                    )
-                    # Convert to standard format (results already scaled by preprocessing)
-                    # The preprocessing functions all use fx=2, fy=2
-                    scale = 2  # Matches preprocessing scale in ocr_engine.py
-                    results = []
-                    for r in multipass_results:
-                        # x position needs to be divided by scale since preprocessing enlarged the image
-                        results.append((r.bbox, r.text, r.confidence))
-                elif hasattr(self._ocr_reader, 'read_text'):
-                    # Single-pass OCR engine
-                    scale = 2
-                    scaled = cv2.resize(row_img, None, fx=scale, fy=scale, 
-                                       interpolation=cv2.INTER_LINEAR)
-                    ocr_results = self._ocr_reader.read_text(scaled, min_confidence=0.3)
-                    results = [(r.bbox, r.text, r.confidence) for r in ocr_results]
-                else:
-                    # Legacy EasyOCR direct usage
-                    scale = 2
-                    scaled = cv2.resize(row_img, None, fx=scale, fy=scale, 
-                                       interpolation=cv2.INTER_LINEAR)
-                    results = self._ocr_reader.readtext(scaled, paragraph=False)
-                
-                names = []
-                for bbox, text, conf in results:
-                    if conf > 0.2 and len(text.strip()) >= 2:
-                        # Handle both tuple bbox (new) and list bbox (legacy)
-                        if isinstance(bbox, tuple) and len(bbox) == 4:
-                            x_center = (bbox[0] + bbox[2] / 2) / scale
-                            x_left = bbox[0] / scale
-                            x_right = (bbox[0] + bbox[2]) / scale
-                        else:
-                            x_center = (bbox[0][0] + bbox[2][0]) / 2 / scale
-                            x_left = min(bbox[0][0], bbox[3][0]) / scale
-                            x_right = max(bbox[1][0], bbox[2][0]) / scale
-                        raw_name = text.strip()
-                        
-                        # NOTE: Don't do early fuzzy matching here - let _detect() handle it
-                        # with proper team codes to avoid matching players to wrong teams
-                        # (e.g., matching 'doma' garbage to a player not in this match)
-                        
-                        names.append({"name": raw_name, "x": x_center, "x_left": x_left, "x_right": x_right, "conf": conf})
-                
-                names.sort(key=lambda n: n["x"])
+                # Same OCR strategy for all rows (including self-kills).
+                # Self-kill rows look identical to normal kills in the killfeed:
+                #   [killer_name] [icon] [victim_name]
+                # with the same player on both sides and both backgrounds the same colour.
+                names = self._ocr_killfeed_row(row_img, w)
 
                 if len(names) >= 2:
                     killer_name = names[0]["name"]
                     victim_name = names[-1]["name"]
                 elif len(names) == 1:
-                    # Single name - determine position
+                    # Only 1 name found - assign based on position
                     if names[0]["x"] < w / 2:
                         killer_name = names[0]["name"]
                     else:
@@ -3590,8 +3612,8 @@ class KillfeedDetector(BaseDetector):
         killer_text_right = None
         victim_text_left = None
         if len(names) >= 2:
-            killer_text_right = names[0]["x_right"]
-            victim_text_left = names[-1]["x_left"]
+            killer_text_right = names[0].get("x_right")
+            victim_text_left = names[-1].get("x_left")
         
         return {
             "killer_name": killer_name,
@@ -3923,6 +3945,11 @@ class TopHUDDetector(BaseDetector):
         self._in_halftime = False
         self._halftime_listeners: list = []
         self._ROUND_DEBOUNCE_MS = 5000
+        self._zero_zero_seen = False
+    
+    def has_confirmed_zero_zero(self) -> bool:
+        """Returns True once a 0-0 score has been seen on screen via OCR."""
+        return self._zero_zero_seen
     
     def add_halftime_listener(self, callback):
         """Add a callback to be notified of halftime state changes."""
@@ -4023,6 +4050,10 @@ class TopHUDDetector(BaseDetector):
         right_score, right_conf = self._extract_score(right_roi)
         score_visible = left_score >= 0 and right_score >= 0 and left_conf >= 0.5 and right_conf >= 0.5
         if score_visible:
+            # Track when we first see a 0-0 score (match start)
+            if not self._zero_zero_seen and left_score == 0 and right_score == 0:
+                self._zero_zero_seen = True
+                print(f"[TopHUD] Match start detected: 0-0 score confirmed at t={t_ms/1000:.1f}s", flush=True)
             self._consecutive_invalid_frames = 0
             self._last_valid_score_ms = t_ms
             current_total = left_score + right_score
