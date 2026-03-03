@@ -2866,6 +2866,34 @@ class KillfeedDetector(BaseDetector):
                     f"crop_{self._crop_counter:05d}_t{int(t_ms)}ms.png"
                 )
                 cv2.imwrite(crop_path, icon_img)
+
+                # ── Diagnostic: save annotated full row alongside crop ──
+                try:
+                    diag_dir = os.path.join(self._crop_output_dir, "diag")
+                    os.makedirs(diag_dir, exist_ok=True)
+                    diag_row = row_img.copy()
+                    rh, rw = diag_row.shape[:2]
+                    # Draw OCR boundary lines
+                    if ktr is not None:
+                        ktr_px = int(round(ktr))
+                        cv2.line(diag_row, (ktr_px, 0), (ktr_px, rh), (0, 0, 255), 2)  # Red = killer_text_right
+                    if vtl is not None:
+                        vtl_px = int(round(vtl))
+                        cv2.line(diag_row, (vtl_px, 0), (vtl_px, rh), (255, 0, 0), 2)  # Blue = victim_text_left
+                    # Draw the actual crop region (from stored bounds)
+                    last_bounds = getattr(self, '_last_crop_bounds', None)
+                    if last_bounds is not None:
+                        cx0, cx1 = last_bounds
+                        cv2.rectangle(diag_row, (cx0, 0), (cx1, rh), (0, 255, 0), 2)  # Green = actual crop
+                    # Draw search zone if available
+                    last_zone = getattr(self, '_last_search_zone', None)
+                    if last_zone is not None:
+                        sz0, sz1 = last_zone
+                        cv2.rectangle(diag_row, (sz0, 2), (sz1, rh - 2), (0, 255, 255), 1)  # Yellow = search zone
+                    diag_path = os.path.join(diag_dir, f"row_{self._crop_counter:05d}_t{int(t_ms)}ms.png")
+                    cv2.imwrite(diag_path, diag_row)
+                except Exception:
+                    pass
             entry["weapon_icon"] = icon_img
 
             # Create kill event with normalized names
@@ -3608,12 +3636,22 @@ class KillfeedDetector(BaseDetector):
         # Compute text boundaries for weapon icon extraction
         # killer_text_right = right edge of killer (leftmost) text bbox
         # victim_text_left = left edge of victim (rightmost) text bbox
-        # Since names is sorted by x, names[0] is killer and names[-1] is victim
+        # Since names is sorted by x, names[0] is killer and names[-1] is victim.
+        #
+        # Filter out spurious OCR detections near row edges (agent icons can
+        # produce short text fragments that shift the boundary assignment).
+        # Only consider OCR results whose center is within 10%-90% of the row.
         killer_text_right = None
         victim_text_left = None
         if len(names) >= 2:
-            killer_text_right = names[0].get("x_right")
-            victim_text_left = names[-1].get("x_left")
+            inner_names = [n for n in names if w * 0.10 < n["x"] < w * 0.90]
+            if len(inner_names) >= 2:
+                killer_text_right = inner_names[0].get("x_right")
+                victim_text_left = inner_names[-1].get("x_left")
+            else:
+                # Fall back to unfiltered if filtering removed too many
+                killer_text_right = names[0].get("x_right")
+                victim_text_left = names[-1].get("x_left")
         
         return {
             "killer_name": killer_name,
@@ -3691,197 +3729,223 @@ class KillfeedDetector(BaseDetector):
         killer name text ends and the victim name text begins.  This
         naturally captures the weapon icon + any headshot indicator.
 
-        Fallback strategy — **hue-gap gradient detection**:
-        1. Classify every pixel's hue as orange-family, teal-family, or
-           neutral (ignoring near-grey / near-black pixels).
-        2. Compute a smoothed dominance signal and find the strongest
-           zero-crossing (hue transition = weapon-icon location).
-        3. Use dominance gradient to detect the transition zone width.
-        4. Extend proportionally from the gradient edges.
-        5. Enforce min/max crop width and return the crop at full row height.
+        Fallback strategy — **threshold-based contour detection**:
+        When OCR boundaries are unavailable (self-kills, 1-name results),
+        binary-threshold the row to isolate white/bright pixels (weapon
+        icon silhouette), find contours in the center zone, and use
+        their bounding box as the crop region.
         """
         try:
             h, w = row_img.shape[:2]
             if w < 60 or h < 10:
                 return None
 
+            # Track actual crop bounds for diagnostic overlay
+            self._last_crop_bounds = None
+            self._last_search_zone = None
+
             # ── Primary: OCR text boundary crop ──
+            MIN_CROP_W = max(38, h)  # minimum crop width = row height or 38px
             if killer_text_right is not None and victim_text_left is not None:
                 left_bound = int(round(killer_text_right))
                 right_bound = int(round(victim_text_left))
                 gap = right_bound - left_bound
 
-                # Debug logging for first 10 crops
-                if hasattr(self, '_crop_counter') and self._crop_counter < 10:
-                    print(f"[TEXT-CROP] crop#{self._crop_counter} killer_right={killer_text_right:.1f} victim_left={victim_text_left:.1f} gap={gap} w={w}")
+                # Debug logging for ALL crops — method used + dimensions
+                crop_num = getattr(self, '_crop_counter', 0)
+                print(f"[CROP-DBG] crop#{crop_num} OCR: kR={killer_text_right:.1f} vL={victim_text_left:.1f} gap={gap} w={w}")
 
-                if gap >= 20:  # minimum gap for a weapon icon
-                    # OCR bboxes tend to extend slightly past the actual
-                    # text glyphs, so trim inward a few pixels to avoid
-                    # capturing the last character of the killer name or
-                    # the first character of the victim name.
-                    trim = max(4, int(gap * 0.06))  # ~6px at gap=100
-                    x0 = max(0, left_bound + trim)
-                    x1 = min(w, right_bound - trim)
+                # Sanity check: gap must be reasonable.
+                # Normal weapon gaps are 80-160px at w=585 (14-27%).
+                # Reject if gap > 40% of row (OCR likely wrong) or < 20px.
+                if gap >= 20 and gap <= w * 0.40:
+                    # ── Bright-pixel refinement ──
+                    # OCR boundaries guide a SEARCH ZONE, but the actual
+                    # crop is determined by detecting the bright weapon
+                    # icon silhouette.  PaddleOCR often merges the white
+                    # weapon icon with the adjacent killer name text into
+                    # one enlarged bbox, pushing kR too far right.
+
+                    # Expand proportional to the OCR gap.  kR often
+                    # overshoots right, so we search to the left;
+                    # but cap it so we don't reach agent portrait icons.
+                    expand_left = max(20, int(gap * 0.40))
+                    expand_right = max(10, int(gap * 0.10))
+                    search_x0 = max(int(w * 0.15), left_bound - expand_left)
+                    search_x1 = min(int(w * 0.85), right_bound + expand_right)
+                    self._last_search_zone = (search_x0, search_x1)
+
+                    # HSV threshold for white/bright pixels — excludes
+                    # saturated coloured background pixels.
+                    hsv_row = cv2.cvtColor(row_img, cv2.COLOR_BGR2HSV)
+                    white_mask = cv2.inRange(
+                        hsv_row,
+                        np.array([0, 0, 180]),     # any hue, low sat, bright
+                        np.array([180, 80, 255]),
+                    )
+                    # Restrict to search zone
+                    zone_mask = np.zeros_like(white_mask)
+                    zone_mask[0:h, search_x0:search_x1] = 255
+                    white_mask = cv2.bitwise_and(white_mask, zone_mask)
+
+                    contours_bp, _ = cv2.findContours(
+                        white_mask, cv2.RETR_EXTERNAL,
+                        cv2.CHAIN_APPROX_SIMPLE,
+                    )
+
+                    # Filter noise — each contour must have meaningful area
+                    min_cnt_area = h * 2
+                    bp_valid = []
+                    for cnt in contours_bp:
+                        area = cv2.contourArea(cnt)
+                        if area >= min_cnt_area:
+                            bx, by, bw, bh = cv2.boundingRect(cnt)
+                            bp_valid.append((bx, by, bw, bh, area))
+
+                    if bp_valid:
+                        # Exclude contours past victim text boundary —
+                        # weapon icon is always LEFT of victim_text_left.
+                        bp_valid = [c for c in bp_valid
+                                    if (c[0] + c[2] // 2) <= right_bound - 10]
+
+                    if bp_valid:
+                        # Prefer the contour whose center is nearest
+                        # the midpoint of the OCR gap — the weapon icon
+                        # sits between killer and victim text.  Among
+                        # contours within 30 px of the midpoint, pick
+                        # the largest (to ignore tiny text fragments).
+                        gap_mid = (left_bound + right_bound) / 2
+                        def _score(c):
+                            cx = c[0] + c[2] / 2
+                            dist = abs(cx - gap_mid)
+                            # Bin into near (<30px from mid) vs far;
+                            # within the same bin, prefer larger area
+                            near = 0 if dist < 30 else 1
+                            return (near, -c[4])  # lower = better
+                        bp_valid.sort(key=_score)
+                        best = bp_valid[0]
+                        icon_x0 = best[0]
+                        icon_x1 = best[0] + best[2]
+
+                        # Cluster nearby contours that may be parts of
+                        # the same icon (handle + barrel, etc.)
+                        MAX_ICON_W = max(80, int(w * 0.15))
+                        cluster_gap = max(8, int(h * 0.25))
+                        for c in bp_valid[1:]:
+                            c_x0, c_x1 = c[0], c[0] + c[2]
+                            if (c_x0 <= icon_x1 + cluster_gap and
+                                    c_x1 >= icon_x0 - cluster_gap):
+                                new_x0 = min(icon_x0, c_x0)
+                                new_x1 = max(icon_x1, c_x1)
+                                if (new_x1 - new_x0) <= MAX_ICON_W:
+                                    icon_x0 = new_x0
+                                    icon_x1 = new_x1
+
+                        pad = max(4, int(h * 0.15))
+                        x0 = max(0, icon_x0 - pad)
+                        x1 = min(w, icon_x1 + pad)
+
+                        if (x1 - x0) < MIN_CROP_W:
+                            mid = (x0 + x1) // 2
+                            x0 = max(0, mid - MIN_CROP_W // 2)
+                            x1 = min(w, x0 + MIN_CROP_W)
+
+                        self._last_crop_bounds = (x0, x1)
+                        print(f"[CROP-DBG] crop#{crop_num} -> OCR+bright x0={x0} x1={x1} w={x1-x0} (icon {icon_x0}-{icon_x1})")
+                        icon = row_img[0:h, x0:x1]
+                        if icon.size > 0:
+                            return icon
+
+                    # No bright contours — fall back to OCR gap with trim
+                    inward_pct = 0.06
+                    x0 = max(0, left_bound + int(gap * inward_pct))
+                    x1 = min(w, right_bound - int(gap * inward_pct))
+                    if (x1 - x0) < MIN_CROP_W:
+                        mid = (x0 + x1) // 2
+                        x0 = max(0, mid - MIN_CROP_W // 2)
+                        x1 = min(w, x0 + MIN_CROP_W)
+                    self._last_crop_bounds = (x0, x1)
+                    print(f"[CROP-DBG] crop#{crop_num} -> OCR trim fallback x0={x0} x1={x1} w={x1-x0}")
                     icon = row_img[0:h, x0:x1]
                     if icon.size > 0:
                         return icon
-                # If gap < 20 or other issue, fall through to gradient approach
+                else:
+                    print(f"[CROP-DBG] crop#{crop_num} OCR gap rejected (gap={gap}, max={int(w*0.40)}) -> threshold fallback")
+                # If gap out of bounds, fall through to threshold approach
 
-            hsv = cv2.cvtColor(row_img, cv2.COLOR_BGR2HSV)
-            H_ch = hsv[:, :, 0]  # shape (h, w)
-            S_ch = hsv[:, :, 1]
-            V_ch = hsv[:, :, 2]
+            # ── Fallback: Threshold-based weapon icon detection ──
+            #
+            # When OCR boundaries are unavailable (self-kills, 1-name results),
+            # use binary thresholding to find the weapon icon.  The weapon icon
+            # is rendered as a white/bright silhouette between the two colored
+            # name backgrounds.  By thresholding the grayscale row and finding
+            # contours, we can locate the weapon icon region directly.
+            crop_num = getattr(self, '_crop_counter', 0)
+            print(f"[CROP-DBG] crop#{crop_num} -> threshold fallback")
 
-            # ── Step 1: Per-column hue classification (vectorised) ──
-            MIN_SAT = 15
-            MIN_VAL = 40
-            valid = (S_ch >= MIN_SAT) & (V_ch >= MIN_VAL)
-            n_valid = valid.sum(axis=0).astype(np.float64)
-            n_valid_safe = np.maximum(n_valid, 1.0)
+            gray = cv2.cvtColor(row_img, cv2.COLOR_BGR2GRAY)
+            # Threshold to isolate bright pixels (weapon icon is white/light)
+            _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
 
-            # Orange hue family: H in [0, 30] or [150, 180]
-            orange_px = valid & ((H_ch <= 30) | (H_ch >= 150))
-            orange_frac = orange_px.sum(axis=0).astype(np.float64) / n_valid_safe
+            # Find contours of bright regions
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-            # Teal/cyan hue family: H in [70, 120]
-            teal_px = valid & (H_ch >= 70) & (H_ch <= 120)
-            teal_frac = teal_px.sum(axis=0).astype(np.float64) / n_valid_safe
-
-            # Zero-out columns with too few valid pixels
-            low_valid = n_valid < max(2, h * 0.2)
-            orange_frac[low_valid] = 0.0
-            teal_frac[low_valid] = 0.0
-
-            # ── Step 2: Smoothed dominance signal ──
-            ks = max(5, int(w * 0.025) | 1)  # ~15 px at w=585, ensure odd
-            kernel = np.ones(ks) / ks
-            orange_sm = np.convolve(orange_frac, kernel, mode='same')
-            teal_sm = np.convolve(teal_frac, kernel, mode='same')
-
-            # dominance > 0 → orange, < 0 → teal
-            dominance = orange_sm - teal_sm
-
-            # ── Step 3: Find zero-crossings (hue transitions) ──
-            crossings: list[int] = []
-            for x in range(1, w):
-                if dominance[x - 1] * dominance[x] < 0:
-                    crossings.append(x)
-                elif dominance[x - 1] != 0 and dominance[x] == 0:
-                    crossings.append(x)
-
-            if not crossings:
+            if not contours:
+                print(f"[CROP-DBG] crop#{crop_num} -> center fallback (no threshold contours)")
                 return self._center_fallback_crop(row_img)
 
-            SWING_WINDOW = max(10, int(w * 0.06))
-            best_cross = None
-            best_swing = -1.0
-            for cr in crossings:
-                if cr < w * 0.15 or cr > w * 0.85:
-                    continue
-                left_avg = float(np.mean(dominance[max(0, cr - SWING_WINDOW):cr]))
-                right_avg = float(np.mean(dominance[cr:min(w, cr + SWING_WINDOW)]))
-                swing = abs(right_avg - left_avg)
-                if swing > best_swing:
-                    best_swing = swing
-                    best_cross = cr
+            # Filter contours: must be in the central portion of the row
+            # (weapon icon is between killer and victim names, roughly 20-80%)
+            # and must have reasonable area (not tiny noise dots)
+            center_zone_left = int(w * 0.18)
+            center_zone_right = int(w * 0.82)
+            min_area = h * 3  # at least 3px wide equivalent
 
-            if best_cross is None:
+            valid_contours = []
+            for cnt in contours:
+                bx, by, bw, bh = cv2.boundingRect(cnt)
+                cx = bx + bw // 2
+                area = cv2.contourArea(cnt)
+                # Contour center must be in the central zone and area must be meaningful
+                if center_zone_left <= cx <= center_zone_right and area >= min_area:
+                    valid_contours.append((bx, by, bw, bh, area))
+
+            if not valid_contours:
+                print(f"[CROP-DBG] crop#{crop_num} -> center fallback (no valid contours)")
                 return self._center_fallback_crop(row_img)
 
-            # ── Step 4: Detect weapon boundaries via dominance gradient ──
-            #
-            # The dominance signal (orange_sm − teal_sm) transitions
-            # sharply through the weapon-icon zone: strongly positive in
-            # the killer-name region, strongly negative in the victim-
-            # name region.  The absolute value of its spatial gradient
-            # is large inside the weapon zone (rapid hue transition) and
-            # near-zero in the name zones (flat colour).  Walking
-            # outward from the crossing until the gradient drops below a
-            # threshold naturally delineates the weapon icon without
-            # requiring any assumptions about pixel brightness or color.
+            # Find the bounding box that encloses all valid contours
+            all_left = min(c[0] for c in valid_contours)
+            all_right = max(c[0] + c[2] for c in valid_contours)
 
-            dom_grad = np.abs(np.gradient(dominance))
+            # Add small padding around the detected weapon region
+            pad = max(4, int(h * 0.15))
+            x0 = max(0, all_left - pad)
+            x1 = min(w, all_right + pad)
 
-            # Smooth the gradient to avoid single-column noise
-            gk = 15
-            g_kernel = np.ones(gk) / gk
-            grad_smooth = np.convolve(dom_grad, g_kernel, mode='same')
+            # Enforce min/max crop width
+            crop_w = x1 - x0
+            MAX_CROP = int(w * 0.30)  # ~175px at w=585
 
-            # Use a relative threshold: fraction of the peak gradient near
-            # the crossing.  This adapts to each row's signal strength.
-            peak_window = 40
-            peak_lo = max(0, best_cross - peak_window)
-            peak_hi = min(len(grad_smooth), best_cross + peak_window)
-            peak_grad = float(grad_smooth[peak_lo:peak_hi].max())
-            GRAD_THRESH = max(peak_grad * 0.04, 0.001)  # 4% of peak, min 0.001
-            CONSEC_DROP = 6
-
-            safe_left = int(w * 0.08)
-            safe_right = int(w * 0.92)
-
-            # Walk LEFT from crossing: find where gradient drops
-            weapon_left = safe_left  # fallback
-            consec = 0
-            for x in range(best_cross - 1, safe_left - 1, -1):
-                if grad_smooth[x] < GRAD_THRESH:
-                    consec += 1
-                    if consec >= CONSEC_DROP:
-                        weapon_left = x + CONSEC_DROP
-                        break
-                else:
-                    consec = 0
-
-            # Walk RIGHT from crossing: find where gradient drops
-            weapon_right = safe_right  # fallback
-            consec = 0
-            for x in range(best_cross + 1, safe_right + 1):
-                if grad_smooth[x] < GRAD_THRESH:
-                    consec += 1
-                    if consec >= CONSEC_DROP:
-                        weapon_right = x - CONSEC_DROP
-                        break
-                else:
-                    consec = 0
-
-            # ── Step 4b: Extend gradient zone to full weapon icon ──
-            #
-            # The gradient core (~30px) only covers the hue transition.
-            # The weapon icon silhouette extends 25-40px beyond this
-            # on each side.  Apply a proportional extension from the
-            # gradient edges.  The extension is asymmetric: the icon
-            # tends to extend further LEFT (toward the killer name)
-            # than RIGHT (toward the victim name).
-            grad_gap = weapon_right - weapon_left
-            extend_left = max(30, int(grad_gap * 1.0))   # ~30px at typical grad_gap=30
-            extend_right = max(25, int(grad_gap * 0.8))
-
-            ext_left = max(safe_left, weapon_left - extend_left)
-            ext_right = min(safe_right, weapon_right + extend_right)
-
-            left_bound = ext_left
-            right_bound = ext_right
-
-            # ── Step 5: Enforce min/max crop width ──
-            crop_w = right_bound - left_bound
-            MIN_CROP = 50
-            MAX_CROP = int(w * 0.28)
-
-            if crop_w < MIN_CROP:
-                # Centre a MIN_CROP window on the crossing
-                mid = best_cross
-                left_bound = max(0, mid - MIN_CROP // 2)
-                right_bound = min(w, left_bound + MIN_CROP)
+            if crop_w < MIN_CROP_W:
+                mid = (x0 + x1) // 2
+                x0 = max(0, mid - MIN_CROP_W // 2)
+                x1 = min(w, x0 + MIN_CROP_W)
             elif crop_w > MAX_CROP:
-                # Trim symmetrically toward the crossing
-                mid = (left_bound + right_bound) // 2
-                left_bound = max(0, mid - MAX_CROP // 2)
-                right_bound = min(w, left_bound + MAX_CROP)
+                # Too many bright contours — narrow to the largest cluster
+                # Sort by area descending and take the biggest contour
+                valid_contours.sort(key=lambda c: c[4], reverse=True)
+                bx, by, bw, bh, _ = valid_contours[0]
+                x0 = max(0, bx - pad)
+                x1 = min(w, bx + bw + pad)
+                # Still enforce min
+                if (x1 - x0) < MIN_CROP_W:
+                    mid = (x0 + x1) // 2
+                    x0 = max(0, mid - MIN_CROP_W // 2)
+                    x1 = min(w, x0 + MIN_CROP_W)
 
-            # Generous padding so edges of weapon aren't clipped
-            pad = max(6, int((right_bound - left_bound) * 0.10))
-            x0 = max(0, left_bound - pad)
-            x1 = min(w, right_bound + pad)
+            self._last_crop_bounds = (x0, x1)
+            print(f"[CROP-DBG] crop#{crop_num} -> threshold crop x0={x0} x1={x1} w={x1-x0}")
 
             icon = row_img[0:h, x0:x1]
             if icon.size == 0:
@@ -3894,10 +3958,11 @@ class KillfeedDetector(BaseDetector):
     def _center_fallback_crop(self, row_img: np.ndarray) -> Optional[np.ndarray]:
         """Fallback: return a conservative center crop when gap detection fails."""
         h, w = row_img.shape[:2]
-        crop_w = int(min(80, max(32, w * 0.15)))
+        crop_w = int(min(80, max(h, w * 0.15)))  # at least row height
         cx = w // 2
         x0 = max(0, cx - crop_w // 2)
         x1 = min(w, x0 + crop_w)
+        self._last_crop_bounds = (x0, x1)
         icon = row_img[0:h, x0:x1]
         return icon if icon.size > 0 else None
 
