@@ -586,7 +586,7 @@ class OCREngine:
                     # Match if: close position AND text is similar
                     # (at 2x scale, same name across strategies varies by <50px;
                     #  different names on same row are 100-400px apart)
-                    if x_diff < 100 and text_sim > 0.5:
+                    if x_diff < 50 and text_sim > 0.5:
                         matched_cluster = cluster
                         break
                 

@@ -1,5 +1,0 @@
-docker compose cp vod-worker:/app/outputs/crops ./crops
-
-docker compose run --rm --no-deps --entrypoint sh vod-worker -c "echo 'Before:'; ls /app/outputs/crops/ 2>/dev/null | wc -l; rm -rf /app/outputs/crops/*; echo 'After:'; ls /app/outputs/crops/ 2>/dev/null | wc -l"
-
-docker compose run --rm vod-worker python /app/run_all_vod_tests.py --vod3-only
