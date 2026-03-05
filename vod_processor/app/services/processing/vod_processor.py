@@ -2859,6 +2859,14 @@ class KillfeedDetector(BaseDetector):
                 )
             except Exception:
                 pass
+
+            # Check if crop contains an ultimate ability badge
+            # (KAY/O, Phoenix ult) — if so, isolate just the badge.
+            if icon_img is not None:
+                badge = self._maybe_extract_ult_badge(icon_img)
+                if badge is not None:
+                    icon_img = badge
+
             if icon_img is not None and self._crop_output_dir:
                 self._crop_counter += 1
                 crop_path = os.path.join(
@@ -2890,6 +2898,13 @@ class KillfeedDetector(BaseDetector):
                     if last_zone is not None:
                         sz0, sz1 = last_zone
                         cv2.rectangle(diag_row, (sz0, 2), (sz1, rh - 2), (0, 255, 255), 1)  # Yellow = search zone
+                    # Draw ult badge sub-crop if detected (cyan rectangle)
+                    ult_bounds = getattr(self, '_last_ult_badge_bounds', None)
+                    if ult_bounds is not None and last_bounds is not None:
+                        # ult_bounds are relative to the icon crop; offset to row coords
+                        ub0 = last_bounds[0] + ult_bounds[0]
+                        ub1 = last_bounds[0] + ult_bounds[1]
+                        cv2.rectangle(diag_row, (ub0, 0), (ub1, rh), (255, 255, 0), 2)  # Cyan = ult badge
                     diag_path = os.path.join(diag_dir, f"row_{self._crop_counter:05d}_t{int(t_ms)}ms.png")
                     cv2.imwrite(diag_path, diag_row)
                 except Exception:
@@ -3965,6 +3980,73 @@ class KillfeedDetector(BaseDetector):
         self._last_crop_bounds = (x0, x1)
         icon = row_img[0:h, x0:x1]
         return icon if icon.size > 0 else None
+
+    def _maybe_extract_ult_badge(self, icon_img: np.ndarray) -> Optional[np.ndarray]:
+        """Detect and extract an ultimate ability badge from a weapon icon crop.
+
+        When a victim has an active ultimate (KAY/O, Phoenix), the killfeed
+        shows both the weapon icon and a circular ult badge on the right side.
+        The crop will contain BOTH teal and red/orange pixels because the
+        background transitions from one team colour to the other through the
+        icon area, and the badge adds a second coloured element.
+
+        Detection: both teal >= 20 % AND red >= 20 % of the crop pixels.
+        Extraction: simply crop the rightmost square (height × height)
+        portion — the badge is always on the right.
+        """
+        self._last_ult_badge_bounds = None  # reset each call
+        try:
+            h, w = icon_img.shape[:2]
+            if w < 30 or h < 10:
+                return None
+
+            hsv = cv2.cvtColor(icon_img, cv2.COLOR_BGR2HSV)
+
+            # Detect teal pixels
+            teal_mask = cv2.inRange(
+                hsv,
+                np.array([75, 50, 80]),
+                np.array([115, 255, 255]),
+            )
+            # Detect red/orange pixels — two hue ranges
+            red_mask1 = cv2.inRange(
+                hsv,
+                np.array([0, 120, 140]),
+                np.array([10, 255, 255]),
+            )
+            red_mask2 = cv2.inRange(
+                hsv,
+                np.array([170, 120, 140]),
+                np.array([179, 255, 255]),
+            )
+            red_mask = cv2.bitwise_or(red_mask1, red_mask2)
+
+            total_pixels = h * w
+            teal_pct = cv2.countNonZero(teal_mask) / total_pixels
+            red_pct = cv2.countNonZero(red_mask) / total_pixels
+
+            # BOTH colours must be present — normal crops only have one.
+            if teal_pct < 0.20 or red_pct < 0.20:
+                return None
+
+            # The badge is always on the RIGHT side of the crop.
+            # Crop a square (h × h) anchored to the right edge.
+            badge_x0 = max(0, w - h)
+            badge_x1 = w
+
+            badge_crop = icon_img[0:h, badge_x0:badge_x1]
+            if badge_crop.size == 0:
+                return None
+
+            # Store badge bounds (relative to icon_img) for diag overlay
+            self._last_ult_badge_bounds = (badge_x0, badge_x1)
+
+            crop_num = getattr(self, '_crop_counter', 0)
+            print(f"[CROP-DBG] crop#{crop_num} ULT BADGE detected (teal={teal_pct:.1%} red={red_pct:.1%}) -> right-side badge x={badge_x0}-{badge_x1} w={badge_x1 - badge_x0}")
+            return badge_crop
+
+        except Exception:
+            return None
 
     def _find_color_regions(self, mask: np.ndarray) -> List[Tuple[int, int, int, int]]:
         """Find contiguous color regions in a mask."""
