@@ -9,6 +9,7 @@ Usage:
 Crops are saved to /app/outputs/crops/ with filenames encoding the VOD
 number and timestamp: vod{N}_crop_{NNNNN}_t{ms}ms.png
 """
+import json
 import os
 import sys
 import argparse
@@ -53,14 +54,28 @@ def extract_crops_from_vod(vod_number: int, output_dir: str, crops_dir: str):
 
     # Rename crops from generic crop_NNNNN to include VOD number
     # so crops from different VODs don't overwrite each other.
-    crop_files = sorted(f for f in os.listdir(crops_dir) if f.startswith("crop_") and f.endswith(".png"))
+    # Crops are bucketed into method subfolders (threshold/, ocr_bright/, etc.)
     renamed = 0
-    for f in crop_files:
-        old_path = os.path.join(crops_dir, f)
-        new_name = f"vod{vod_number}_{f}"
-        new_path = os.path.join(crops_dir, new_name)
-        os.rename(old_path, new_path)
-        renamed += 1
+    for root, dirs, files in os.walk(crops_dir):
+        for f in sorted(files):
+            if f.startswith("crop_") and f.endswith(".png"):
+                old_path = os.path.join(root, f)
+                new_name = f"vod{vod_number}_{f}"
+                new_path = os.path.join(root, new_name)
+                os.rename(old_path, new_path)
+                renamed += 1
+
+    # Save ult badge diagnostics to JSON for offline threshold analysis
+    if hasattr(processor, '_killfeed_detector') and processor._killfeed_detector:
+        det = processor._killfeed_detector
+    else:
+        det = processor
+    ult_diags = getattr(det, '_ult_diagnostics', [])
+    if ult_diags:
+        diag_path = os.path.join(crops_dir, f"vod{vod_number}_ult_diagnostics.json")
+        with open(diag_path, 'w') as f:
+            json.dump(ult_diags, f, indent=2)
+        print(f"  -> Ult badge diagnostics: {diag_path} ({len(ult_diags)} entries)")
 
     print(f"\n  -> {renamed} crops saved (prefix: vod{vod_number}_)")
     return renamed

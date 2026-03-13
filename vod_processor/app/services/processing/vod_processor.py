@@ -340,6 +340,7 @@ class VODProcessor:
                 crops_dir = os.path.join(output_dir, "crops")
                 os.makedirs(crops_dir, exist_ok=True)
                 killfeed_detector._crop_output_dir = crops_dir
+                self._killfeed_detector = killfeed_detector  # expose for diagnostic access
                 print(f"[{job_id}] Weapon icon crops will be saved to {crops_dir}")
             
             # Connect TopHUD halftime detection to KillfeedDetector
@@ -2383,6 +2384,11 @@ class KillfeedDetector(BaseDetector):
         # Crop saving: when set, weapon icon crops are written to this directory
         self._crop_output_dir: Optional[str] = None
         self._crop_counter: int = 0
+        self._ult_diagnostics: list = []  # collected per-crop ult badge metrics
+        # Deferred crop: wait 2 frames for the row to stabilize before cropping.
+        # Key: (killer_norm, victim_norm, round) -> dict with row_img, ktr, vtl, etc.
+        self._pending_crops: dict = {}
+        self._CROP_DEFER_FRAMES: int = 2  # number of frames to wait before cropping
         
         # Scheduled halftime start (delayed from transition to capture final kills)
         self._halftime_scheduled_ms: float = 0.0
@@ -2731,6 +2737,11 @@ class KillfeedDetector(BaseDetector):
         _DBG_SELF = (1455000 < t_ms < 1475000) or (1935000 < t_ms < 1960000) or (2055000 < t_ms < 2070000)
         if _DBG_SELF:
             print(f"[DBG-SELF] t={t_ms/1000:.1f}s _detect ENTERED")
+        # ---- DEBUG: trace dead zone (R13-R25) kill pipeline ----
+        _DBG_DEAD = (1695000 <= t_ms <= 3100000)
+        if _DBG_DEAD and not hasattr(self, '_dbg_dead_counts'):
+            self._dbg_dead_counts = {"hash_skip": 0, "parse_none": 0, "conf": 0, "unk_name": 0, "db_miss": 0, "dup": 0, "accepted": 0, "rows_seen": 0}
+            self._dbg_dead_last_print = 0
         # Skip expensive OCR if killfeed hasn't changed
         if not self._has_significant_change(roi_frame):
             if _DBG_SELF:
@@ -2744,21 +2755,32 @@ class KillfeedDetector(BaseDetector):
         if _DBG_SELF:
             print(f"[DBG-SELF] t={t_ms/1000:.1f}s _segment_rows_fixed returned {len(rows)} rows: {[(r[0], r[1], r[2]) for r in rows]}")
         
-        KILLFEED_DISPLAY_WINDOW_MS = 5000  # Kills stay visible for 5s
+        KILLFEED_DISPLAY_WINDOW_MS = 5500  # Kills visible ~5s + 500ms buffer for frame quantization
         for actual_row_idx, y_start, y_end, row_img in rows:
             # Per-row change detection - skip OCR if this row hasn't changed
             row_hash = self._compute_row_hash(row_img)
             if actual_row_idx in self._row_hashes and self._row_hashes[actual_row_idx] == row_hash:
                 if _DBG_SELF:
                     print(f"[DBG-SELF] t={t_ms/1000:.1f}s ROW {actual_row_idx} skipped (row hash unchanged)")
+                if _DBG_DEAD:
+                    self._dbg_dead_counts["hash_skip"] += 1
                 continue  # Row unchanged, skip expensive OCR
-            self._row_hashes[actual_row_idx] = row_hash
+            if _DBG_DEAD:
+                self._dbg_dead_counts["rows_seen"] += 1
             
             entry = self._parse_row(row_img)
             if _DBG_SELF:
                 print(f"[DBG-SELF] t={t_ms/1000:.1f}s ROW {actual_row_idx} _parse_row -> {entry}")
             if not entry:
+                if _DBG_DEAD:
+                    self._dbg_dead_counts["parse_none"] += 1
                 continue
+            
+            # NOTE: Do NOT store the row hash here.  We only seal the hash
+            # after the kill is *accepted* or confirmed as a *duplicate* of an
+            # already-accepted kill.  If the OCR produces garbled names that
+            # fail database/confidence filters, we want to retry this row on
+            # the next frame while the text is still at full opacity.
             
             # Get values
             killer_team = entry.get("killer_team", "unknown")
@@ -2769,17 +2791,37 @@ class KillfeedDetector(BaseDetector):
             
             # Filter 1: Require minimum confidence
             if confidence < 0.7:
+                if _DBG_DEAD:
+                    self._dbg_dead_counts["conf"] += 1
                 continue
             
             # Filter 2: Require BOTH killer and victim names (every kill has both in this VOD)
             # Exception: fall damage would only have victim, but that's rare
             if killer_name == "Unknown" or victim_name == "Unknown":
+                if _DBG_DEAD:
+                    self._dbg_dead_counts["unk_name"] += 1
+                    print(f"[DBG-DEAD] t={t_ms/1000:.1f}s R{actual_row_idx} Filter2: killer='{killer_name}' victim='{victim_name}'")
                 continue
             
             # Convert colors to team codes for team-aware player matching
-            # This is CRITICAL for players who've been on multiple teams (e.g., Crashies: NRG -> FNC)
-            killer_team_code = self.get_team_code_from_color(killer_team) if hasattr(self, 'get_team_code_from_color') else None
-            victim_team_code = self.get_team_code_from_color(victim_team) if hasattr(self, 'get_team_code_from_color') else None
+            # NOTE: _parse_row already overrides colors using the player matcher's
+            # side-based logic (left→teal, right→orange), so the colors here are
+            # already "canonical" (teal=left, orange=right) regardless of halftime.
+            # We must NOT apply halftime swap again via get_team_code_from_color(),
+            # which would double-swap and assign the wrong team pool.
+            # Instead, map directly: teal → left team, orange → right team.
+            if killer_team in ('teal', 'green', 'cyan'):
+                killer_team_code = self._left_team_code
+            elif killer_team in ('orange', 'red', 'yellow'):
+                killer_team_code = self._right_team_code
+            else:
+                killer_team_code = None
+            if victim_team in ('teal', 'green', 'cyan'):
+                victim_team_code = self._left_team_code
+            elif victim_team in ('orange', 'red', 'yellow'):
+                victim_team_code = self._right_team_code
+            else:
+                victim_team_code = None
             
             # Use fuzzy database matching with team-specific player pools
             # match_killfeed_name returns (player_name, extracted_team_code_from_ocr)
@@ -2806,6 +2848,8 @@ class KillfeedDetector(BaseDetector):
 
             # Filter 3: Skip if EITHER normalized name is Unknown (need both for valid kill)
             if killer_name_normalized == "Unknown" or victim_name_normalized == "Unknown":
+                if _DBG_DEAD:
+                    self._dbg_dead_counts["unk_name"] += 1
                 continue
             
             # Filter 4: If we have player matcher loaded, REQUIRE BOTH names to match database
@@ -2813,6 +2857,9 @@ class KillfeedDetector(BaseDetector):
             # coincidentally looks like a valid name but isn't in the match)
             if self._player_matcher:
                 if killer_name_db is None or victim_name_db is None:
+                    if _DBG_DEAD:
+                        self._dbg_dead_counts["db_miss"] += 1
+                        print(f"[DBG-DEAD] t={t_ms/1000:.1f}s Filter4: killer='{killer_name}'->db={killer_name_db}(team={killer_team_code}) victim='{victim_name}'->db={victim_name_db}(team={victim_team_code})")
                     # At least one name didn't match database - skip this kill
                     # This is stricter but prevents false positives when we know the player pool
                     continue
@@ -2820,8 +2867,24 @@ class KillfeedDetector(BaseDetector):
             # Check for duplicates using normalized names
             sig = (t_ms, killer_team, victim_team, killer_name_normalized, victim_name_normalized, actual_row_idx)
             if self._is_duplicate_scroll_aware(t_ms, sig, KILLFEED_DISPLAY_WINDOW_MS):
+                if _DBG_DEAD:
+                    self._dbg_dead_counts["dup"] += 1
+                # Check if there's a pending (deferred) crop for this kill.
+                # If so, update it with this frame's data (row is more stable now).
+                pending_key = (killer_name_normalized.lower(), victim_name_normalized.lower())
+                if pending_key in self._pending_crops:
+                    pc = self._pending_crops[pending_key]
+                    pc["row_img"] = row_img.copy()
+                    pc["frames_seen"] += 1
+                    if pc["frames_seen"] >= self._CROP_DEFER_FRAMES:
+                        self._finalize_deferred_crop(pending_key)
+                # Seal hash for confirmed duplicates
+                self._row_hashes[actual_row_idx] = row_hash
                 continue
             self.recent_signatures.append(sig)
+            
+            # Seal the row hash now that the kill is accepted.
+            self._row_hashes[actual_row_idx] = row_hash
             
             # Determine round number for display - if within 5s buffer of last transition,
             # the kill belongs to the ending round, not the new round
@@ -2832,6 +2895,9 @@ class KillfeedDetector(BaseDetector):
             else:
                 # Past buffer - kill belongs to current round
                 display_round = self._current_round_number
+            
+            if _DBG_DEAD:
+                self._dbg_dead_counts["accepted"] += 1
             
             # Detect self-kill (fall damage, etc.) - killer and victim are the same player
             is_self_kill = (killer_name_normalized.lower().strip() == victim_name_normalized.lower().strip())
@@ -2847,69 +2913,26 @@ class KillfeedDetector(BaseDetector):
             if victim_key:
                 self._victim_last_death[victim_key] = (t_ms, killer_name_normalized)
 
-            # Extract weapon/ability icon crop for this confirmed kill
-            icon_img = None
+            # Defer weapon/ability icon crop  — store for 2 frames to let the
+            # row stabilize (animation flash fades, text fully loads).
             ktr = entry.get("killer_text_right")
             vtl = entry.get("victim_text_left")
-            try:
-                icon_img = self._extract_weapon_icon(
-                    row_img,
-                    killer_text_right=ktr,
-                    victim_text_left=vtl,
-                )
-            except Exception:
-                pass
+            pending_key = (killer_name_normalized.lower(), victim_name_normalized.lower())
+            self._pending_crops[pending_key] = {
+                "row_img": row_img.copy(),
+                "ktr": ktr,
+                "vtl": vtl,
+                "t_ms": t_ms,
+                "display_round": display_round,
+                "killer_name": killer_name_normalized,
+                "victim_name": victim_name_normalized,
+                "is_self_kill": is_self_kill,
+                "actual_row_idx": actual_row_idx,
+                "frames_seen": 0,  # will increment on dup frames
+            }
+            print(f"[CROP-DEFER] crop pending for {killer_name_normalized} -> {victim_name_normalized} ktr={ktr} vtl={vtl} (waiting {self._CROP_DEFER_FRAMES} frames)")
 
-            # Check if crop contains an ultimate ability badge
-            # (KAY/O, Phoenix ult) — if so, isolate just the badge.
-            if icon_img is not None:
-                badge = self._maybe_extract_ult_badge(icon_img)
-                if badge is not None:
-                    icon_img = badge
-
-            if icon_img is not None and self._crop_output_dir:
-                self._crop_counter += 1
-                crop_path = os.path.join(
-                    self._crop_output_dir,
-                    f"crop_{self._crop_counter:05d}_t{int(t_ms)}ms.png"
-                )
-                cv2.imwrite(crop_path, icon_img)
-
-                # ── Diagnostic: save annotated full row alongside crop ──
-                try:
-                    diag_dir = os.path.join(self._crop_output_dir, "diag")
-                    os.makedirs(diag_dir, exist_ok=True)
-                    diag_row = row_img.copy()
-                    rh, rw = diag_row.shape[:2]
-                    # Draw OCR boundary lines
-                    if ktr is not None:
-                        ktr_px = int(round(ktr))
-                        cv2.line(diag_row, (ktr_px, 0), (ktr_px, rh), (0, 0, 255), 2)  # Red = killer_text_right
-                    if vtl is not None:
-                        vtl_px = int(round(vtl))
-                        cv2.line(diag_row, (vtl_px, 0), (vtl_px, rh), (255, 0, 0), 2)  # Blue = victim_text_left
-                    # Draw the actual crop region (from stored bounds)
-                    last_bounds = getattr(self, '_last_crop_bounds', None)
-                    if last_bounds is not None:
-                        cx0, cx1 = last_bounds
-                        cv2.rectangle(diag_row, (cx0, 0), (cx1, rh), (0, 255, 0), 2)  # Green = actual crop
-                    # Draw search zone if available
-                    last_zone = getattr(self, '_last_search_zone', None)
-                    if last_zone is not None:
-                        sz0, sz1 = last_zone
-                        cv2.rectangle(diag_row, (sz0, 2), (sz1, rh - 2), (0, 255, 255), 1)  # Yellow = search zone
-                    # Draw ult badge sub-crop if detected (cyan rectangle)
-                    ult_bounds = getattr(self, '_last_ult_badge_bounds', None)
-                    if ult_bounds is not None and last_bounds is not None:
-                        # ult_bounds are relative to the icon crop; offset to row coords
-                        ub0 = last_bounds[0] + ult_bounds[0]
-                        ub1 = last_bounds[0] + ult_bounds[1]
-                        cv2.rectangle(diag_row, (ub0, 0), (ub1, rh), (255, 255, 0), 2)  # Cyan = ult badge
-                    diag_path = os.path.join(diag_dir, f"row_{self._crop_counter:05d}_t{int(t_ms)}ms.png")
-                    cv2.imwrite(diag_path, diag_row)
-                except Exception:
-                    pass
-            entry["weapon_icon"] = icon_img
+            entry["weapon_icon"] = None
 
             # Create kill event with normalized names
             kill_event = Event(
@@ -2952,7 +2975,104 @@ class KillfeedDetector(BaseDetector):
         self._pending_kills = [k for k in self._pending_kills if k.t_ms >= flush_cutoff_ms]
         events.extend(confirmed_events)
         
+        # Finalize any deferred crops that have been pending long enough
+        # (safety net in case dup path was never hit, e.g. row disappeared)
+        stale_keys = [k for k, v in self._pending_crops.items()
+                      if v["frames_seen"] >= self._CROP_DEFER_FRAMES
+                      or (t_ms - v["t_ms"]) > 500]  # 500ms max wait
+        for pk in stale_keys:
+            self._finalize_deferred_crop(pk)
+        
+        # ---- DEBUG: periodic summary for dead zone ----
+        if _DBG_DEAD and hasattr(self, '_dbg_dead_counts'):
+            if t_ms - self._dbg_dead_last_print > 30000:  # Every 30s
+                c = self._dbg_dead_counts
+                print(f"[DBG-DEAD-SUMMARY] t={t_ms/1000:.1f}s rows_seen={c['rows_seen']} hash_skip={c['hash_skip']} parse_none={c['parse_none']} conf={c['conf']} unk_name={c['unk_name']} db_miss={c['db_miss']} dup={c['dup']} accepted={c['accepted']}")
+                self._dbg_dead_last_print = t_ms
+        
         return events
+
+    def _finalize_deferred_crop(self, pending_key: tuple) -> None:
+        """Finalize a deferred crop using the stored (stabilized) row image."""
+        pc = self._pending_crops.pop(pending_key, None)
+        if pc is None:
+            return
+        
+        row_img = pc["row_img"]
+        ktr = pc["ktr"]
+        vtl = pc["vtl"]
+        t_ms = pc["t_ms"]
+        
+        print(f"[CROP-DEFER] finalizing crop for {pc['killer_name']} -> {pc['victim_name']} (frames_seen={pc['frames_seen']})")
+        
+        # Seal the row hash now that we're done with this row
+        actual_row_idx = pc.get("actual_row_idx")
+        if actual_row_idx is not None:
+            row_hash = self._compute_row_hash(row_img)
+            self._row_hashes[actual_row_idx] = row_hash
+        
+        icon_img = None
+        try:
+            icon_img = self._extract_weapon_icon(
+                row_img,
+                killer_text_right=ktr,
+                victim_text_left=vtl,
+            )
+        except Exception as _crop_err:
+            import traceback; traceback.print_exc()
+            print(f"[CROP-ERR] _extract_weapon_icon failed: {_crop_err}")
+
+        # Check for ult badge
+        if icon_img is not None and self._last_crop_bounds is not None and vtl is not None:
+            weapon_right = self._last_crop_bounds[1]
+            try:
+                badge = self._maybe_extract_ult_badge(row_img, weapon_right, vtl)
+                if badge is not None:
+                    icon_img = badge
+                    self._last_crop_method = "ult_badge"
+            except Exception:
+                pass
+
+        crop_method = getattr(self, '_last_crop_method', None) or "unknown"
+
+        if icon_img is not None and self._crop_output_dir:
+            self._crop_counter += 1
+            method_dir = os.path.join(self._crop_output_dir, crop_method)
+            os.makedirs(method_dir, exist_ok=True)
+            crop_path = os.path.join(
+                method_dir,
+                f"crop_{self._crop_counter:05d}_t{int(t_ms)}ms.png"
+            )
+            cv2.imwrite(crop_path, icon_img)
+
+            # Diagnostic: save annotated full row alongside crop
+            try:
+                diag_dir = os.path.join(self._crop_output_dir, "diag")
+                os.makedirs(diag_dir, exist_ok=True)
+                diag_row = row_img.copy()
+                rh, rw = diag_row.shape[:2]
+                if ktr is not None:
+                    ktr_px = int(round(ktr))
+                    cv2.line(diag_row, (ktr_px, 0), (ktr_px, rh), (0, 0, 255), 2)
+                if vtl is not None:
+                    vtl_px = int(round(vtl))
+                    cv2.line(diag_row, (vtl_px, 0), (vtl_px, rh), (255, 0, 0), 2)
+                last_bounds = getattr(self, '_last_crop_bounds', None)
+                if last_bounds is not None:
+                    cx0, cx1 = last_bounds
+                    cv2.rectangle(diag_row, (cx0, 0), (cx1, rh), (0, 255, 0), 2)
+                last_zone = getattr(self, '_last_search_zone', None)
+                if last_zone is not None:
+                    sz0, sz1 = last_zone
+                    cv2.rectangle(diag_row, (sz0, 2), (sz1, rh - 2), (0, 255, 255), 1)
+                ult_bounds = getattr(self, '_last_ult_badge_bounds', None)
+                if ult_bounds is not None:
+                    ub0, ub1 = ult_bounds
+                    cv2.rectangle(diag_row, (ub0, 0), (ub1, rh), (255, 255, 0), 2)
+                diag_path = os.path.join(diag_dir, f"row_{self._crop_counter:05d}_t{int(t_ms)}ms.png")
+                cv2.imwrite(diag_path, diag_row)
+            except Exception:
+                pass
 
     def _is_duplicate_scroll_aware(self, t_ms: float, sig: tuple, display_window_ms: int) -> bool:
         """
@@ -3663,10 +3783,26 @@ class KillfeedDetector(BaseDetector):
             if len(inner_names) >= 2:
                 killer_text_right = inner_names[0].get("x_right")
                 victim_text_left = inner_names[-1].get("x_left")
+                # Cap killer bbox width: PaddleOCR sometimes merges the
+                # ability icon / weapon pixels into the killer name bbox,
+                # inflating x_right far beyond the actual text.  Normal
+                # killer name bboxes are 60-100px wide; the longest
+                # name ("ENVY Eggsterr") reaches ~108px.  Cap at 100.
+                ktr_xl = inner_names[0].get("x_left", 0)
+                ktr_w = killer_text_right - ktr_xl
+                MAX_NAME_W = 100
+                if ktr_w > MAX_NAME_W:
+                    killer_text_right = ktr_xl + MAX_NAME_W
             else:
                 # Fall back to unfiltered if filtering removed too many
                 killer_text_right = names[0].get("x_right")
                 victim_text_left = names[-1].get("x_left")
+            # Log all OCR boxes so we can see when PaddleOCR merges
+            # weapon/icon pixels into a name bbox
+            crop_num = getattr(self, '_crop_counter', 0)
+            used = inner_names if len(inner_names) >= 2 else names
+            for i, n in enumerate(used):
+                print(f"[OCR-BOX] crop#{crop_num} box{i}: '{n['name']}' xL={n['x_left']:.0f} xR={n['x_right']:.0f} w={n['x_right']-n['x_left']:.0f} conf={n['conf']:.2f}", flush=True)
         
         return {
             "killer_name": killer_name,
@@ -3738,17 +3874,11 @@ class KillfeedDetector(BaseDetector):
         Killfeed row structure:
           [Agent] [Killer Name on colored bg] [WEAPON ICON] [arrow] [Victim on colored bg] [Agent]
 
-        Primary strategy — **OCR text boundary detection**:
-        If killer_text_right and victim_text_left are provided (from OCR
-        bounding boxes in _parse_row), crop the region between where the
-        killer name text ends and the victim name text begins.  This
-        naturally captures the weapon icon + any headshot indicator.
-
-        Fallback strategy — **threshold-based contour detection**:
-        When OCR boundaries are unavailable (self-kills, 1-name results),
-        binary-threshold the row to isolate white/bright pixels (weapon
-        icon silhouette), find contours in the center zone, and use
-        their bounding box as the crop region.
+        Priority order:
+        1. OCR + bright-pixel refinement (search zone around OCR gap)
+        2. Threshold-based contour detection (center zone, bright pixels)
+        3. OCR trim fallback (raw OCR gap with inward trim)
+        4. Center fallback (conservative center crop)
         """
         try:
             h, w = row_img.shape[:2]
@@ -3758,57 +3888,148 @@ class KillfeedDetector(BaseDetector):
             # Track actual crop bounds for diagnostic overlay
             self._last_crop_bounds = None
             self._last_search_zone = None
+            self._last_crop_method = None
 
-            # ── Primary: OCR text boundary crop ──
             MIN_CROP_W = max(38, h)  # minimum crop width = row height or 38px
+            crop_num = getattr(self, '_crop_counter', 0)
+
+            # ── Strategy 1: OCR + bright-pixel refinement ──
+            if killer_text_right is None or victim_text_left is None:
+                ktr_s = f"{killer_text_right:.1f}" if killer_text_right is not None else "None"
+                vtl_s = f"{victim_text_left:.1f}" if victim_text_left is not None else "None"
+                print(f"[CROP-DBG] crop#{crop_num} SKIP Strategy1: kR={ktr_s} vL={vtl_s} (missing OCR bounds)")
             if killer_text_right is not None and victim_text_left is not None:
                 left_bound = int(round(killer_text_right))
                 right_bound = int(round(victim_text_left))
                 gap = right_bound - left_bound
 
-                # Debug logging for ALL crops — method used + dimensions
-                crop_num = getattr(self, '_crop_counter', 0)
+                # ── Ability icon detection ──
+                # Ability icons are small squares (~h×h px).  When
+                # PaddleOCR merges the icon into the killer name bbox
+                # the gap shrinks to < h+15.  Use a vL-anchored crop
+                # instead of the normal Strategy 1 pipeline which
+                # would pick up the killer agent icon.
+                if 0 < gap < h + 15:
+                    icon_w = int(h * 1.05)
+                    # Pull right edge inward — the ability icon sits
+                    # a few px left of vL, not flush against it.
+                    icon_x1 = right_bound - 4
+                    icon_x0 = max(0, icon_x1 - icon_w)
+                    pad_l = max(4, int(h * 0.10))
+                    pad_r = 1
+                    x0 = max(0, icon_x0 - pad_l)
+                    x1 = min(w, icon_x1 + pad_r)
+                    if (x1 - x0) < MIN_CROP_W:
+                        mid = (x0 + x1) // 2
+                        x0 = max(0, mid - MIN_CROP_W // 2)
+                        x1 = min(w, x0 + MIN_CROP_W)
+                    self._last_crop_bounds = (x0, x1)
+                    self._last_crop_method = "ocr_hybrid"
+                    print(f"[CROP-DBG] crop#{crop_num} ability-icon crop (gap={gap}): x0={x0} x1={x1} w={x1-x0}")
+                    icon = row_img[0:h, x0:x1]
+                    if icon.size > 0:
+                        return icon
+
+                # ── ktr color-boundary correction ──
+                # PaddleOCR sometimes merges a small ability icon into
+                # the killer name bbox, pushing ktr too far right.
+                # Detect this by checking if ktr pixels are team-colored;
+                # if not, scan leftward to find where team color ends.
+                # Only attempt when gap is non-trivial (>= 20px).
+                if gap >= 20:
+                    hsv_row = cv2.cvtColor(row_img, cv2.COLOR_BGR2HSV)
+                    teal_m = cv2.inRange(hsv_row, np.array([75, 50, 80]), np.array([115, 255, 255]))
+                    red_m1 = cv2.inRange(hsv_row, np.array([0, 80, 100]), np.array([15, 255, 255]))
+                    red_m2 = cv2.inRange(hsv_row, np.array([165, 80, 100]), np.array([179, 255, 255]))
+                    team_color_mask = cv2.bitwise_or(teal_m, cv2.bitwise_or(red_m1, red_m2))
+                    strip_x0 = max(0, left_bound - 1)
+                    strip_x1 = min(w, left_bound + 2)
+                    strip = team_color_mask[:, strip_x0:strip_x1]
+                    color_frac = np.count_nonzero(strip) / max(1, strip.size)
+                    if color_frac < 0.45:
+                        min_scan = int(gap * 0.8)
+                        scan_limit = max(int(w * 0.10), left_bound - min_scan)
+                        original_left_bound = left_bound
+                        new_ktr = left_bound
+                        for sx in range(left_bound - 1, scan_limit - 1, -1):
+                            col_strip = team_color_mask[:, sx:sx+1]
+                            if np.count_nonzero(col_strip) / max(1, col_strip.size) >= 0.35:
+                                new_ktr = sx + 1
+                                break
+                        if new_ktr < left_bound:
+                            left_bound = new_ktr
+                            gap = right_bound - left_bound
+                            # Guard: if correction made gap too large, the
+                            # scan hit team color from a different element
+                            # (e.g. agent icon, different row). Revert.
+                            if gap > w * 0.38:
+                                print(f"[CROP-DBG] crop#{crop_num} ktr correction {original_left_bound} -> {new_ktr} REVERTED (gap={gap} > {w*0.38:.0f})")
+                                left_bound = original_left_bound
+                                gap = right_bound - left_bound
+                            else:
+                                print(f"[CROP-DBG] crop#{crop_num} ktr corrected {original_left_bound} -> {new_ktr} (color boundary)")
+                    elif gap < 50:
+                        # Team color extends through the weapon/ability
+                        # icon area (same bg as killer name).  Color scan
+                        # cannot find a boundary, so push ktr left by a
+                        # fixed amount to give Strategy 1 a wider zone.
+                        original_left_bound = left_bound
+                        push = max(120, int(w * 0.20))
+                        left_bound = max(int(w * 0.10), left_bound - push)
+                        gap = right_bound - left_bound
+                        print(f"[CROP-DBG] crop#{crop_num} ktr merged-icon push {original_left_bound} -> {left_bound} (gap={gap}, team-color extends through icon)")
+                else:
+                    hsv_row = None
+
                 print(f"[CROP-DBG] crop#{crop_num} OCR: kR={killer_text_right:.1f} vL={victim_text_left:.1f} gap={gap} w={w}")
 
-                # Sanity check: gap must be reasonable.
-                # Normal weapon gaps are 80-160px at w=585 (14-27%).
-                # Reject if gap > 40% of row (OCR likely wrong) or < 20px.
-                if gap >= 20 and gap <= w * 0.40:
-                    # ── Bright-pixel refinement ──
-                    # OCR boundaries guide a SEARCH ZONE, but the actual
-                    # crop is determined by detecting the bright weapon
-                    # icon silhouette.  PaddleOCR often merges the white
-                    # weapon icon with the adjacent killer name text into
-                    # one enlarged bbox, pushing kR too far right.
+                if gap >= 30 and gap <= w * 0.38:
+                    # Expand search zone generously left to catch icons
+                    # absorbed into the killer name bbox
+                    pass  # gap in range — proceed with Strategy 1
+                elif gap < 30:
+                    print(f"[CROP-DBG] crop#{crop_num} SKIP Strategy1: gap={gap} < 30")
+                else:
+                    print(f"[CROP-DBG] crop#{crop_num} SKIP Strategy1: gap={gap} > {w*0.38:.0f} (w*0.38)")
 
-                    # Expand proportional to the OCR gap.  kR often
-                    # overshoots right, so we search to the left;
-                    # but cap it so we don't reach agent portrait icons.
-                    expand_left = max(20, int(gap * 0.40))
+                if gap >= 30 and gap <= w * 0.38:
                     expand_right = max(10, int(gap * 0.10))
-                    search_x0 = max(int(w * 0.15), left_bound - expand_left)
+                    # For very large gaps the gun sits fully inside
+                    # kR..vL — don't search left of kR to avoid
+                    # killer-name text on bright/yellow backgrounds.
+                    if gap > 140:
+                        search_x0 = max(int(w * 0.12), left_bound)
+                    else:
+                        expand_left = max(25, int(gap * 0.50))
+                        search_x0 = max(int(w * 0.12), left_bound - expand_left)
                     search_x1 = min(int(w * 0.85), right_bound + expand_right)
                     self._last_search_zone = (search_x0, search_x1)
 
-                    # HSV threshold for white/bright pixels — excludes
-                    # saturated coloured background pixels.
-                    hsv_row = cv2.cvtColor(row_img, cv2.COLOR_BGR2HSV)
-                    white_mask = cv2.inRange(
-                        hsv_row,
-                        np.array([0, 0, 180]),     # any hue, low sat, bright
-                        np.array([180, 80, 255]),
-                    )
+                    if hsv_row is None:
+                        hsv_row = cv2.cvtColor(row_img, cv2.COLOR_BGR2HSV)
+
+                    # Grayscale threshold within the OCR search zone.
+                    # Mask out high-saturation pixels first — on yellow /
+                    # team-colored backgrounds, bright background pixels
+                    # pass the gray>180 threshold and create giant
+                    # contours.  Icon pixels are white/gray (low sat).
+                    gray = cv2.cvtColor(row_img, cv2.COLOR_BGR2GRAY)
+                    _, thresh = cv2.threshold(
+                        gray, 180, 255, cv2.THRESH_BINARY)
+                    if hsv_row is None:
+                        hsv_row = cv2.cvtColor(row_img, cv2.COLOR_BGR2HSV)
+                    sat_mask = cv2.inRange(hsv_row[:, :, 1], 0, 90)
+                    thresh = cv2.bitwise_and(thresh, sat_mask)
                     # Restrict to search zone
-                    zone_mask = np.zeros_like(white_mask)
+                    zone_mask = np.zeros_like(thresh)
                     zone_mask[0:h, search_x0:search_x1] = 255
-                    white_mask = cv2.bitwise_and(white_mask, zone_mask)
+                    thresh = cv2.bitwise_and(thresh, zone_mask)
 
                     contours_bp, _ = cv2.findContours(
-                        white_mask, cv2.RETR_EXTERNAL,
+                        thresh, cv2.RETR_EXTERNAL,
                         cv2.CHAIN_APPROX_SIMPLE,
                     )
 
-                    # Filter noise — each contour must have meaningful area
                     min_cnt_area = h * 2
                     bp_valid = []
                     for cnt in contours_bp:
@@ -3817,44 +4038,116 @@ class KillfeedDetector(BaseDetector):
                             bx, by, bw, bh = cv2.boundingRect(cnt)
                             bp_valid.append((bx, by, bw, bh, area))
 
+                    n_contours_total = len(bp_valid)
+                    # Filter contours near the victim text — the headshot
+                    # icon sits just left of vL and its contours must be
+                    # excluded or they merge with the weapon cluster.
+                    hs_margin = max(20, int(gap * 0.20))
                     if bp_valid:
-                        # Exclude contours past victim text boundary —
-                        # weapon icon is always LEFT of victim_text_left.
                         bp_valid = [c for c in bp_valid
-                                    if (c[0] + c[2] // 2) <= right_bound - 10]
+                                    if (c[0] + c[2] // 2) <= right_bound - hs_margin]
+                    n_after_right = len(bp_valid)
+
+                    # Also filter contours whose center is to the LEFT of
+                    # left_bound (these are likely killer-name text pixels).
+                    # Gap-dependent: for small gaps (<100) the gun fills
+                    # most of the gap and extends left of kR, so be loose.
+                    # For large gaps (>120) text leaks in, so be tight.
+                    if gap <= 140:
+                        left_filter_x = left_bound - max(15, int(gap * 0.20))
+                    else:
+                        left_filter_x = left_bound - max(5, int(gap * 0.04))
+                    if bp_valid:
+                        bp_valid = [c for c in bp_valid
+                                    if (c[0] + c[2] // 2) >= left_filter_x]
+                    n_after_left = len(bp_valid)
+
+                    if not bp_valid:
+                        print(f"[CROP-DBG] crop#{crop_num} Strategy1 brightness: contours {n_contours_total}->right_filt {n_after_right}->left_filt {n_after_left}")
+                        # Fallback: saturation-based detection.
+                        # On team-colored backgrounds the icon is
+                        # low-saturation (white/gray) while the bg is
+                        # high-saturation.  Threshold on inverted sat.
+                        if hsv_row is None:
+                            hsv_row = cv2.cvtColor(row_img, cv2.COLOR_BGR2HSV)
+                        sat_ch = hsv_row[:, :, 1]
+                        # Low saturation = text / icon pixels
+                        _, sat_thresh = cv2.threshold(sat_ch, 70, 255, cv2.THRESH_BINARY_INV)
+                        sat_thresh = cv2.bitwise_and(sat_thresh, zone_mask)
+                        contours_sat, _ = cv2.findContours(
+                            sat_thresh, cv2.RETR_EXTERNAL,
+                            cv2.CHAIN_APPROX_SIMPLE)
+                        for cnt in contours_sat:
+                            area = cv2.contourArea(cnt)
+                            if area >= min_cnt_area:
+                                bx, by, bw, bh = cv2.boundingRect(cnt)
+                                bp_valid.append((bx, by, bw, bh, area))
+                        # Re-apply same right/left filters
+                        if bp_valid:
+                            bp_valid = [c for c in bp_valid
+                                        if (c[0] + c[2] // 2) <= right_bound - hs_margin]
+                        if bp_valid:
+                            bp_valid = [c for c in bp_valid
+                                        if (c[0] + c[2] // 2) >= left_bound - left_filter_margin]
+                        if bp_valid:
+                            print(f"[CROP-DBG] crop#{crop_num} saturation fallback found {len(bp_valid)} contours")
+                        else:
+                            print(f"[CROP-DBG] crop#{crop_num} SKIP Strategy1: no contours (brightness or saturation)")
 
                     if bp_valid:
-                        # Prefer the contour whose center is nearest
-                        # the midpoint of the OCR gap — the weapon icon
-                        # sits between killer and victim text.  Among
-                        # contours within 30 px of the midpoint, pick
-                        # the largest (to ignore tiny text fragments).
                         gap_mid = (left_bound + right_bound) / 2
+                        # Prefer contours near the LEFT side of the gap
+                        # (weapon icon) over the right (headshot icon).
+                        weapon_anchor = left_bound + gap * 0.35
                         def _score(c):
                             cx = c[0] + c[2] / 2
-                            dist = abs(cx - gap_mid)
-                            # Bin into near (<30px from mid) vs far;
-                            # within the same bin, prefer larger area
-                            near = 0 if dist < 30 else 1
-                            return (near, -c[4])  # lower = better
+                            return (abs(cx - weapon_anchor), -c[4])
                         bp_valid.sort(key=_score)
                         best = bp_valid[0]
                         icon_x0 = best[0]
                         icon_x1 = best[0] + best[2]
 
-                        # Cluster nearby contours that may be parts of
-                        # the same icon (handle + barrel, etc.)
-                        MAX_ICON_W = max(80, int(w * 0.15))
-                        cluster_gap = max(8, int(h * 0.25))
+                        cluster_gap = max(12, int(h * 0.40))
+                        MAX_ICON_W = min(140, max(int(gap * 0.75), 80))
                         for c in bp_valid[1:]:
                             c_x0, c_x1 = c[0], c[0] + c[2]
                             if (c_x0 <= icon_x1 + cluster_gap and
                                     c_x1 >= icon_x0 - cluster_gap):
                                 new_x0 = min(icon_x0, c_x0)
                                 new_x1 = max(icon_x1, c_x1)
-                                if (new_x1 - new_x0) <= MAX_ICON_W:
-                                    icon_x0 = new_x0
-                                    icon_x1 = new_x1
+                                if (new_x1 - new_x0) > MAX_ICON_W:
+                                    continue  # Skip: would make cluster too wide
+                                icon_x0 = new_x0
+                                icon_x1 = new_x1
+
+                        # Clamp to OCR boundaries — slightly generous
+                        # on the left (weapons extend left of ktr) and
+                        # allow a small right overshoot (gun barrels can
+                        # extend past vL).  The hs_margin filter already
+                        # excluded headshot-icon contours from the cluster.
+                        # Left margin: generous for small gaps (gun
+                        # extends left), tight for large gaps (text leak).
+                        if gap <= 140:
+                            left_margin = max(20, int(gap * 0.30))
+                        else:
+                            left_margin = max(8, int(gap * 0.10))
+                        right_margin = max(15, int(gap * 0.20))
+                        icon_x0 = max(icon_x0, left_bound - left_margin)
+                        icon_x1 = min(icon_x1, right_bound + right_margin)
+
+                        # Headshot guard: prevent crop from extending
+                        # into the headshot-icon zone near vL.  The
+                        # hs_margin filtered contour *centers*, but a
+                        # contour edge can still reach into hs territory.
+                        hs_right_limit = right_bound - max(15, int(gap * 0.12))
+                        if icon_x1 > hs_right_limit:
+                            icon_x1 = hs_right_limit
+
+                        # If the icon cluster is still wider than
+                        # MAX_ICON_W (e.g. a single giant contour that
+                        # merged weapon + headshot), trim from the right.
+                        if (icon_x1 - icon_x0) > MAX_ICON_W:
+                            icon_x1 = icon_x0 + MAX_ICON_W
 
                         pad = max(4, int(h * 0.15))
                         x0 = max(0, icon_x0 - pad)
@@ -3866,12 +4159,13 @@ class KillfeedDetector(BaseDetector):
                             x1 = min(w, x0 + MIN_CROP_W)
 
                         self._last_crop_bounds = (x0, x1)
-                        print(f"[CROP-DBG] crop#{crop_num} -> OCR+bright x0={x0} x1={x1} w={x1-x0} (icon {icon_x0}-{icon_x1})")
+                        self._last_crop_method = "ocr_hybrid"
+                        print(f"[CROP-DBG] crop#{crop_num} -> OCR+hybrid x0={x0} x1={x1} w={x1-x0} (icon {icon_x0}-{icon_x1})")
                         icon = row_img[0:h, x0:x1]
                         if icon.size > 0:
                             return icon
 
-                    # No bright contours — fall back to OCR gap with trim
+                    # ── Strategy 2: OCR trim fallback ──
                     inward_pct = 0.06
                     x0 = max(0, left_bound + int(gap * inward_pct))
                     x1 = min(w, right_bound - int(gap * inward_pct))
@@ -3880,92 +4174,66 @@ class KillfeedDetector(BaseDetector):
                         x0 = max(0, mid - MIN_CROP_W // 2)
                         x1 = min(w, x0 + MIN_CROP_W)
                     self._last_crop_bounds = (x0, x1)
+                    self._last_crop_method = "ocr_trim"
                     print(f"[CROP-DBG] crop#{crop_num} -> OCR trim fallback x0={x0} x1={x1} w={x1-x0}")
                     icon = row_img[0:h, x0:x1]
                     if icon.size > 0:
                         return icon
-                else:
-                    print(f"[CROP-DBG] crop#{crop_num} OCR gap rejected (gap={gap}, max={int(w*0.40)}) -> threshold fallback")
-                # If gap out of bounds, fall through to threshold approach
 
-            # ── Fallback: Threshold-based weapon icon detection ──
-            #
-            # When OCR boundaries are unavailable (self-kills, 1-name results),
-            # use binary thresholding to find the weapon icon.  The weapon icon
-            # is rendered as a white/bright silhouette between the two colored
-            # name backgrounds.  By thresholding the grayscale row and finding
-            # contours, we can locate the weapon icon region directly.
-            crop_num = getattr(self, '_crop_counter', 0)
-            print(f"[CROP-DBG] crop#{crop_num} -> threshold fallback")
-
+            # ── Strategy 3: Threshold-based contour detection ──
             gray = cv2.cvtColor(row_img, cv2.COLOR_BGR2GRAY)
-            # Threshold to isolate bright pixels (weapon icon is white/light)
             _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+            contours_th, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-            # Find contours of bright regions
-            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours_th:
+                center_zone_left = int(w * 0.18)
+                center_zone_right = int(w * 0.82)
+                min_area = h * 3
 
-            if not contours:
-                print(f"[CROP-DBG] crop#{crop_num} -> center fallback (no threshold contours)")
-                return self._center_fallback_crop(row_img)
+                valid_contours = []
+                for cnt in contours_th:
+                    bx, by, bw, bh = cv2.boundingRect(cnt)
+                    cx = bx + bw // 2
+                    area = cv2.contourArea(cnt)
+                    if center_zone_left <= cx <= center_zone_right and area >= min_area:
+                        valid_contours.append((bx, by, bw, bh, area))
 
-            # Filter contours: must be in the central portion of the row
-            # (weapon icon is between killer and victim names, roughly 20-80%)
-            # and must have reasonable area (not tiny noise dots)
-            center_zone_left = int(w * 0.18)
-            center_zone_right = int(w * 0.82)
-            min_area = h * 3  # at least 3px wide equivalent
+                if valid_contours:
+                    all_left = min(c[0] for c in valid_contours)
+                    all_right = max(c[0] + c[2] for c in valid_contours)
 
-            valid_contours = []
-            for cnt in contours:
-                bx, by, bw, bh = cv2.boundingRect(cnt)
-                cx = bx + bw // 2
-                area = cv2.contourArea(cnt)
-                # Contour center must be in the central zone and area must be meaningful
-                if center_zone_left <= cx <= center_zone_right and area >= min_area:
-                    valid_contours.append((bx, by, bw, bh, area))
+                    pad = max(4, int(h * 0.15))
+                    x0 = max(0, all_left - pad)
+                    x1 = min(w, all_right + pad)
 
-            if not valid_contours:
-                print(f"[CROP-DBG] crop#{crop_num} -> center fallback (no valid contours)")
-                return self._center_fallback_crop(row_img)
+                    crop_w = x1 - x0
+                    MAX_CROP = int(w * 0.30)
 
-            # Find the bounding box that encloses all valid contours
-            all_left = min(c[0] for c in valid_contours)
-            all_right = max(c[0] + c[2] for c in valid_contours)
+                    if crop_w < MIN_CROP_W:
+                        mid = (x0 + x1) // 2
+                        x0 = max(0, mid - MIN_CROP_W // 2)
+                        x1 = min(w, x0 + MIN_CROP_W)
+                    elif crop_w > MAX_CROP:
+                        valid_contours.sort(key=lambda c: c[4], reverse=True)
+                        bx, by, bw, bh, _ = valid_contours[0]
+                        x0 = max(0, bx - pad)
+                        x1 = min(w, bx + bw + pad)
+                        if (x1 - x0) < MIN_CROP_W:
+                            mid = (x0 + x1) // 2
+                            x0 = max(0, mid - MIN_CROP_W // 2)
+                            x1 = min(w, x0 + MIN_CROP_W)
 
-            # Add small padding around the detected weapon region
-            pad = max(4, int(h * 0.15))
-            x0 = max(0, all_left - pad)
-            x1 = min(w, all_right + pad)
+                    self._last_crop_bounds = (x0, x1)
+                    self._last_crop_method = "threshold"
+                    print(f"[CROP-DBG] crop#{crop_num} -> threshold x0={x0} x1={x1} w={x1-x0}")
+                    icon = row_img[0:h, x0:x1]
+                    if icon.size > 0:
+                        return icon
 
-            # Enforce min/max crop width
-            crop_w = x1 - x0
-            MAX_CROP = int(w * 0.30)  # ~175px at w=585
-
-            if crop_w < MIN_CROP_W:
-                mid = (x0 + x1) // 2
-                x0 = max(0, mid - MIN_CROP_W // 2)
-                x1 = min(w, x0 + MIN_CROP_W)
-            elif crop_w > MAX_CROP:
-                # Too many bright contours — narrow to the largest cluster
-                # Sort by area descending and take the biggest contour
-                valid_contours.sort(key=lambda c: c[4], reverse=True)
-                bx, by, bw, bh, _ = valid_contours[0]
-                x0 = max(0, bx - pad)
-                x1 = min(w, bx + bw + pad)
-                # Still enforce min
-                if (x1 - x0) < MIN_CROP_W:
-                    mid = (x0 + x1) // 2
-                    x0 = max(0, mid - MIN_CROP_W // 2)
-                    x1 = min(w, x0 + MIN_CROP_W)
-
-            self._last_crop_bounds = (x0, x1)
-            print(f"[CROP-DBG] crop#{crop_num} -> threshold crop x0={x0} x1={x1} w={x1-x0}")
-
-            icon = row_img[0:h, x0:x1]
-            if icon.size == 0:
-                return None
-            return icon
+            # ── Strategy 4: Center fallback ──
+            self._last_crop_method = "center"
+            print(f"[CROP-DBG] crop#{crop_num} -> center fallback")
+            return self._center_fallback_crop(row_img)
 
         except Exception:
             return None
@@ -3981,26 +4249,37 @@ class KillfeedDetector(BaseDetector):
         icon = row_img[0:h, x0:x1]
         return icon if icon.size > 0 else None
 
-    def _maybe_extract_ult_badge(self, icon_img: np.ndarray) -> Optional[np.ndarray]:
-        """Detect and extract an ultimate ability badge from a weapon icon crop.
+    def _maybe_extract_ult_badge(
+        self,
+        row_img: np.ndarray,
+        gap_left: float,
+        gap_right: float,
+    ) -> Optional[np.ndarray]:
+        """Detect and extract an ultimate ability badge.
 
-        When a victim has an active ultimate (KAY/O, Phoenix), the killfeed
-        shows both the weapon icon and a circular ult badge on the right side.
-        The crop will contain BOTH teal and red/orange pixels because the
-        background transitions from one team colour to the other through the
-        icon area, and the badge adds a second coloured element.
-
-        Detection: both teal >= 20 % AND red >= 20 % of the crop pixels.
-        Extraction: simply crop the rightmost square (height × height)
-        portion — the badge is always on the right.
+        Analyses the region between gap_left (typically the weapon icon's
+        right edge) and gap_right (victim_text_left or an estimate).
+        If the victim team colour covers >= 11 % of this region, an ult
+        badge is present.  Crops from the first victim-colour column to
+        gap_right.
         """
         self._last_ult_badge_bounds = None  # reset each call
         try:
-            h, w = icon_img.shape[:2]
-            if w < 30 or h < 10:
+            h, w = row_img.shape[:2]
+            gap_x0 = int(round(gap_left))
+            gap_x1 = int(round(gap_right))
+            gap = gap_x1 - gap_x0
+            if gap < 40 or h < 10:
                 return None
 
-            hsv = cv2.cvtColor(icon_img, cv2.COLOR_BGR2HSV)
+            # Trim bottom to avoid background bleed diluting colours
+            trim_bot = max(3, int(h * 0.20))
+            gap_region = row_img[0:h - trim_bot, gap_x0:gap_x1]
+            gh, gw = gap_region.shape[:2]
+            if gh < 4 or gw < 20:
+                return None
+
+            hsv = cv2.cvtColor(gap_region, cv2.COLOR_BGR2HSV)
 
             # Detect teal pixels
             teal_mask = cv2.inRange(
@@ -4021,28 +4300,84 @@ class KillfeedDetector(BaseDetector):
             )
             red_mask = cv2.bitwise_or(red_mask1, red_mask2)
 
-            total_pixels = h * w
+            total_pixels = gh * gw
             teal_pct = cv2.countNonZero(teal_mask) / total_pixels
             red_pct = cv2.countNonZero(red_mask) / total_pixels
 
-            # BOTH colours must be present — normal crops only have one.
-            if teal_pct < 0.20 or red_pct < 0.20:
+            # Determine killer colour (dominant) and victim colour (minority).
+            # Normal crops: only the killer colour appears.  With an ult badge
+            # the victim colour also shows up at >= 20 %.
+            if teal_pct >= red_pct:
+                killer_pct, victim_pct = teal_pct, red_pct
+                victim_mask = red_mask
+            else:
+                killer_pct, victim_pct = red_pct, teal_pct
+                victim_mask = teal_mask
+
+            # Collect diagnostics for offline analysis
+            contours_v, _ = cv2.findContours(
+                victim_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            largest_area = max(cv2.contourArea(c) for c in contours_v) if contours_v else 0
+
+            # Brightness check: real ult badges have a visible weapon icon
+            # (bright/white pixels) alongside the victim color.  False
+            # positives are just team-colored background with little brightness.
+            gray_gap = cv2.cvtColor(gap_region, cv2.COLOR_BGR2GRAY)
+            _, bright_mask = cv2.threshold(gray_gap, 180, 255, cv2.THRESH_BINARY)
+            bright_pct = cv2.countNonZero(bright_mask) / total_pixels
+
+            crop_num = getattr(self, '_crop_counter', 0)
+            self._ult_diagnostics.append({
+                "crop": crop_num + 1,
+                "gap_x0": gap_x0, "gap_x1": gap_x1, "gap_w": gap,
+                "teal_pct": round(teal_pct, 4),
+                "red_pct": round(red_pct, 4),
+                "killer_pct": round(killer_pct, 4),
+                "victim_pct": round(victim_pct, 4),
+                "largest_blob": int(largest_area),
+                "bright_pct": round(bright_pct, 4),
+                "detected": victim_pct >= 0.15 and largest_area >= 150 and bright_pct >= 0.20,
+            })
+
+            if victim_pct < 0.15:
                 return None
 
-            # The badge is always on the RIGHT side of the crop.
-            # Crop a square (h × h) anchored to the right edge.
-            badge_x0 = max(0, w - h)
-            badge_x1 = w
+            # Contiguity check — require a substantial blob, not scatter.
+            if not contours_v:
+                return None
+            if largest_area < 150:          # reject sparse noise
+                return None
 
-            badge_crop = icon_img[0:h, badge_x0:badge_x1]
+            # Brightness gate: reject if gap region lacks bright weapon pixels
+            if bright_pct < 0.20:
+                return None
+
+            # Find the leftmost x in the gap where victim colour appears
+            # to determine where the badge region starts.
+            victim_cols = np.where(victim_mask.any(axis=0))[0]
+            if len(victim_cols) == 0:
+                return None
+
+            # Badge region: from the first victim-colour column to the
+            # right edge of the gap, in full-height row coordinates.
+            badge_x0_row = gap_x0 + int(victim_cols[0])
+            badge_x1_row = gap_x1
+
+            # Enforce minimum badge width (at least row-height square)
+            badge_w = badge_x1_row - badge_x0_row
+            if badge_w < h:
+                badge_x0_row = max(gap_x0, badge_x1_row - h)
+
+            badge_crop = row_img[0:h, badge_x0_row:badge_x1_row]
             if badge_crop.size == 0:
                 return None
 
-            # Store badge bounds (relative to icon_img) for diag overlay
-            self._last_ult_badge_bounds = (badge_x0, badge_x1)
+            # Store badge bounds (absolute row coordinates) for diag overlay
+            self._last_ult_badge_bounds = (badge_x0_row, badge_x1_row)
 
             crop_num = getattr(self, '_crop_counter', 0)
-            print(f"[CROP-DBG] crop#{crop_num} ULT BADGE detected (teal={teal_pct:.1%} red={red_pct:.1%}) -> right-side badge x={badge_x0}-{badge_x1} w={badge_x1 - badge_x0}")
+            print(f"[CROP-DBG] crop#{crop_num} ULT BADGE detected (killer={killer_pct:.1%} victim={victim_pct:.1%}) -> badge x={badge_x0_row}-{badge_x1_row} w={badge_x1_row - badge_x0_row}")
             return badge_crop
 
         except Exception:

@@ -31,11 +31,11 @@ class Settings(BaseSettings):
 
     # Processing
     worker_concurrency: int = 2
-    frame_sample_fps: float = 6.0  # Reduced from 8 for faster processing
+    frame_sample_fps: float = 15.0  # Increased for better killfeed OCR coverage
 
     # Speed optimization
     fast_mode: bool = False
-    killfeed_fps: float = 5.0  # Increased for better detection of fast multi-kills
+    killfeed_fps: float = 15.0  # Increased for better detection of fast multi-kills
     top_hud_fps: float = 2.0
 
     # Optional player filter
@@ -146,7 +146,7 @@ BOTTOM_HUD_SUBREGIONS: Dict[str, Tuple[float, float, float, float]] = {
 
 # Per-detector effective FPS
 DETECTOR_FPS: Dict[str, float] = {
-    "killfeed": 10.0,  # Increased to 10 FPS for better coverage of fast kills (was 8)
+    "killfeed": 15.0,  # Increased to 15 FPS for better coverage of fast kills
     "top_hud": 2.0,      # Simplified OCR approach - 2 FPS is sufficient for score
     "bottom_hud": 5.0,
     "minimap": 3.0,
