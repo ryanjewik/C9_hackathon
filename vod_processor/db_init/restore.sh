@@ -9,6 +9,10 @@ DB_NAME="${POSTGRES_DB:-cloud9}"
 
 echo "Checking backup file format..."
 
+# Enable pg_trgm extension for fuzzy player name matching
+echo "Enabling pg_trgm extension..."
+psql --username="$POSTGRES_USER" --dbname="$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;" || true
+
 # Check if the file is a custom format pg_dump
 if file "$BACKUP_FILE" | grep -q "PostgreSQL custom database dump"; then
     echo "Restoring from PostgreSQL custom dump format..."

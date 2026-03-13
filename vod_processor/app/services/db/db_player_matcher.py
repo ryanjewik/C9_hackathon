@@ -172,6 +172,10 @@ class DatabasePlayerMatcher:
                 """, (team_tag, team_tag, team_tag, team_tag, team_tag))
                 return cur.fetchall()
         except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             print(f"[DBPlayerMatcher] Query error: {e}")
             return []
     
@@ -251,6 +255,10 @@ class DatabasePlayerMatcher:
                 return players
                 
         except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             print(f"[DBPlayerMatcher] Query error in find_roster_by_date: {e}")
             return []
     
@@ -297,6 +305,11 @@ class DatabasePlayerMatcher:
                       clean_text, f"{clean_text}%", clean_text, limit))
                 return cur.fetchall()
         except psycopg2.Error as e:
+            # Roll back the aborted transaction so subsequent queries work
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             # If similarity function doesn't exist, fall back to LIKE
             if 'function similarity' in str(e).lower():
                 print("[DBPlayerMatcher] pg_trgm not available, using LIKE fallback")
@@ -341,6 +354,10 @@ class DatabasePlayerMatcher:
                 
                 return sorted(results, key=lambda x: x['match_score'], reverse=True)
         except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             print(f"[DBPlayerMatcher] Fallback query error: {e}")
             return []
     
