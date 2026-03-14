@@ -1,0 +1,21 @@
+# Ignore build artifacts and local files
+target/
+**/target/
+.mvn/
+.m2/
+.settings/
+.idea/
+.vscode/
+*.log
+*.tmp
+*.zip
+node_modules/
+.DS_Store
+.env
+backup.sql
+restore.sh
+**/.gradle/
+**/build/
+**/.idea/
+**/.classpath
+**/.project
