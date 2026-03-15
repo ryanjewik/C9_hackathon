@@ -7,6 +7,9 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
+
+//services layer handles business logic, calls the respository, throws exceptions, caching, preparing data
+//for caching we may make another service that handles caching
 @Service
 public class PlayerService {
     private final PlayerRepository playerRepository;
