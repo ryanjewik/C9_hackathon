@@ -1,5 +1,6 @@
 package com.example.data_service.service;
 
+import com.example.data_service.dto.TournamentDto;
 import com.example.data_service.entity.Tournament;
 import com.example.data_service.exception.ResourceNotFoundException;
 import com.example.data_service.repository.TournamentRepository;
@@ -16,11 +17,13 @@ public class TournamentService {
         this.tournamentRepository = tournamentRepository;
     }
 
-    public Page<Tournament> getTournaments(int page, int size) {
-        return tournamentRepository.findAll(PageRequest.of(page, size));
+    public Page<TournamentDto> getTournaments(int page, int size) {
+        return tournamentRepository.findAllAsDto(PageRequest.of(page, size));
     }
 
-    public Tournament getTournament(Integer id) {
-        return tournamentRepository.findById(id).orElseThrow(() -> new ResourceNotFoundException("Tournament not found with id: " + id));
+    public TournamentDto getTournament(Integer id) {
+        TournamentDto dto = tournamentRepository.findDtoById(id);
+        if (dto == null) throw new ResourceNotFoundException("Tournament not found with id: " + id);
+        return dto;
     }
 }
