@@ -11,9 +11,12 @@ services:
         - "5433:5432"  # Use 5433 to avoid conflicts with host postgres
       volumes:
         - postgres_data:/var/lib/postgresql/data
-        # Mount restore script and backup file
+        # Mount restore script; keep the binary dump out of initdb.d so the
+        # entrypoint doesn't try to execute it as SQL. Mount schema.sql into
+        # initdb.d so it will be applied pre-restore by our script.
         - ./restore.sh:/docker-entrypoint-initdb.d/00-restore.sh:ro
-        - ./backup.sql:/docker-entrypoint-initdb.d/backup.sql:ro
+        - ./schema.sql:/backup/schema.sql:ro
+        - ./backup.sql:/backup/backup.dump:ro
       restart: unless-stopped
       healthcheck:
         test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
@@ -51,6 +54,8 @@ services:
         condition: service_healthy
     expose:
       - "8080"
+    ports:
+      - "8081:8080"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1"]
       interval: 10s
@@ -75,6 +80,8 @@ services:
         condition: service_healthy
     expose:
       - "8080"
+    ports:
+      - "8082:8080"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1"]
       interval: 10s

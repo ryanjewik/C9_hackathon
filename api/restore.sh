@@ -4,7 +4,7 @@
 
 set -e
 
-BACKUP_FILE="/docker-entrypoint-initdb.d/backup.sql"
+BACKUP_FILE="/backup/backup.dump"
 DB_NAME="${POSTGRES_DB:-cloud9}"
 
 echo "Checking backup file format..."
@@ -13,8 +13,19 @@ echo "Checking backup file format..."
 echo "Enabling pg_trgm extension..."
 psql --username="$POSTGRES_USER" --dbname="$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;" || true
 
-# Check if the file is a custom format pg_dump
-if file "$BACKUP_FILE" | grep -q "PostgreSQL custom database dump"; then
+# If a schema file is provided, apply it first (idempotent). This helps when
+# the provided backup is data-only or pg_restore doesn't recreate schema.
+SCHEMA_FILE="/backup/schema.sql"
+if [ -f "$SCHEMA_FILE" ]; then
+    echo "Schema file $SCHEMA_FILE found — applying before restore..."
+    psql --username="$POSTGRES_USER" --dbname="$DB_NAME" -f "$SCHEMA_FILE" || true
+    echo "Schema apply (pre-restore) attempted."
+fi
+
+# Check if the backup file is a pg_restore-compatible archive. Some minimal
+# postgres images don't include the `file` utility, so use `pg_restore -l` to
+# probe the archive format instead.
+if [ -f "$BACKUP_FILE" ] && pg_restore -l "$BACKUP_FILE" >/dev/null 2>&1; then
     echo "Restoring from PostgreSQL custom dump format..."
     pg_restore --username="$POSTGRES_USER" \
                --dbname="$DB_NAME" \
@@ -24,10 +35,12 @@ if file "$BACKUP_FILE" | grep -q "PostgreSQL custom database dump"; then
                --if-exists \
                "$BACKUP_FILE" || true
     echo "Restore completed!"
-else
-    echo "Attempting SQL script restore..."
-    psql --username="$POSTGRES_USER" --dbname="$DB_NAME" < "$BACKUP_FILE" || true
+elif [ -f "$BACKUP_FILE" ]; then
+    echo "Attempting SQL script restore (plain SQL file)..."
+    psql --username="$POSTGRES_USER" --dbname="$DB_NAME" -f "$BACKUP_FILE" || true
     echo "SQL restore attempted."
+else
+    echo "No backup file found at $BACKUP_FILE; skipping data restore."
 fi
 
 echo "Database restoration complete."
