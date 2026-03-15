@@ -1,1 +1,3 @@
 curl -i -u dev:devpass "http://localhost:8081/api/players?page=0&size=10"
+
+http://localhost:8081/api/players/458
