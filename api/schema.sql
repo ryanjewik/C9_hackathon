@@ -99,7 +99,7 @@ CREATE TABLE esports_players (
     last_60_avg_fd DECIMAL(5, 2)
 );
 
--- Matches table
+-- Matches table (bo3 bo1 bo5 etc)
 CREATE TABLE esports_matches (
     id INTEGER PRIMARY KEY,  -- VLR match ID from URL
     phase VARCHAR(100),  -- e.g., "Group Stage: Opening (A)"
