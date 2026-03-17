@@ -24,31 +24,39 @@ public class Match {
 
     @Column(name = "tournament_name")
     private String tournamentName;
-
-    @Column(name = "team1_name")
+    @Column(name = "team_1_name")
     private String team1Name;
 
-    @Column(name = "team1_id")
+    @Column(name = "team_1_id")
     private Integer team1Id;
 
-    @Column(name = "team1_score")
+    @Column(name = "team_1_score")
     private Integer team1Score;
 
-    @Column(name = "team2_name")
+    @Column(name = "team_2_name")
     private String team2Name;
 
-    @Column(name = "team2_id")
+    @Column(name = "team_2_id")
     private Integer team2Id;
 
-    @Column(name = "team2_score")
+    @Column(name = "team_2_score")
     private Integer team2Score;
 
     private Integer winner;
     private String format;
+    @Column(name = "map_1")
     private String map1;
+
+    @Column(name = "map_2")
     private String map2;
+
+    @Column(name = "map_3")
     private String map3;
+
+    @Column(name = "map_4")
     private String map4;
+
+    @Column(name = "map_5")
     private String map5;
 
     // getters/setters

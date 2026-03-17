@@ -14,10 +14,19 @@ public class Roster {
     @Column(name = "team_id")
     private Integer teamId;
 
+    @Column(name = "player_1")
     private Integer player1;
+
+    @Column(name = "player_2")
     private Integer player2;
+
+    @Column(name = "player_3")
     private Integer player3;
+
+    @Column(name = "player_4")
     private Integer player4;
+
+    @Column(name = "player_5")
     private Integer player5;
 
     @Column(name = "date_created")

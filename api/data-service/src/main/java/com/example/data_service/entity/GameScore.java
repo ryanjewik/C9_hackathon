@@ -13,23 +13,22 @@ public class GameScore {
 
     @Column(name = "match_id")
     private Integer matchId;
-
-    @Column(name = "team1_score")
+    @Column(name = "team_1_score")
     private Integer team1Score;
 
-    @Column(name = "team2_score")
+    @Column(name = "team_2_score")
     private Integer team2Score;
 
-    @Column(name = "team1_id")
+    @Column(name = "team_1_id")
     private Integer team1Id;
 
-    @Column(name = "team2_id")
+    @Column(name = "team_2_id")
     private Integer team2Id;
 
-    @Column(name = "team1_name")
+    @Column(name = "team_1_name")
     private String team1Name;
 
-    @Column(name = "team2_name")
+    @Column(name = "team_2_name")
     private String team2Name;
 
     private String map;
