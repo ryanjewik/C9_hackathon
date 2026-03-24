@@ -3,6 +3,8 @@ package com.example.data_service.entity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.JoinColumn;
 import jakarta.persistence.Table;
 
 @Entity
@@ -28,6 +30,30 @@ public class Roster {
 
     @Column(name = "player_5")
     private Integer player5;
+
+    @ManyToOne
+    @JoinColumn(name = "team_id", referencedColumnName = "id", insertable = false, updatable = false)
+    private Team teamEntity;
+
+    @ManyToOne
+    @JoinColumn(name = "player_1", referencedColumnName = "id", insertable = false, updatable = false)
+    private Player player1Entity;
+
+    @ManyToOne
+    @JoinColumn(name = "player_2", referencedColumnName = "id", insertable = false, updatable = false)
+    private Player player2Entity;
+
+    @ManyToOne
+    @JoinColumn(name = "player_3", referencedColumnName = "id", insertable = false, updatable = false)
+    private Player player3Entity;
+
+    @ManyToOne
+    @JoinColumn(name = "player_4", referencedColumnName = "id", insertable = false, updatable = false)
+    private Player player4Entity;
+
+    @ManyToOne
+    @JoinColumn(name = "player_5", referencedColumnName = "id", insertable = false, updatable = false)
+    private Player player5Entity;
 
     @Column(name = "date_created")
     private String dateCreated;
@@ -59,4 +85,10 @@ public class Roster {
     public void setMapWins(Integer mapWins) { this.mapWins = mapWins; }
     public Integer getMapLosses() { return mapLosses; }
     public void setMapLosses(Integer mapLosses) { this.mapLosses = mapLosses; }
+    public Player getPlayer1Entity() { return player1Entity; }
+    public Player getPlayer2Entity() { return player2Entity; }
+    public Player getPlayer3Entity() { return player3Entity; }
+    public Player getPlayer4Entity() { return player4Entity; }
+    public Player getPlayer5Entity() { return player5Entity; }
+    public Team getTeamEntity() { return teamEntity; }
 }
