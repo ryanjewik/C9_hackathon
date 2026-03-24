@@ -1,5 +1,7 @@
 package com.example.data_service.dto;
+import com.fasterxml.jackson.annotation.JsonInclude;
 
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public class TeamDto {
     private Integer id;
     private String name;
@@ -21,6 +23,12 @@ public class TeamDto {
         this.matchWins = matchWins;
         this.matchLosses = matchLosses;
         this.currentRosterId = currentRosterId;
+    }
+
+    public TeamDto(Integer id, String name, String teamTag) {
+        this.id = id;
+        this.name = name;
+        this.teamTag = teamTag;
     }
 
     public Integer getId() { return id; }

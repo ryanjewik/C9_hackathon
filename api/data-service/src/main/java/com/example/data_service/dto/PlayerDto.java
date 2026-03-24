@@ -1,10 +1,12 @@
 package com.example.data_service.dto;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.math.BigDecimal;
 import java.util.List;
 
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public class PlayerDto {
     private Integer id;
     private String nickname;
@@ -92,6 +94,12 @@ public class PlayerDto {
     private BigDecimal last60AvgFd;
 
     public PlayerDto() {}
+
+    // Convenience constructor for lightweight responses
+    public PlayerDto(Integer id, String nickname) {
+        this.id = id;
+        this.nickname = nickname;
+    }
 
     // Full-args constructor used for JPA constructor projections
     public PlayerDto(Integer id,
