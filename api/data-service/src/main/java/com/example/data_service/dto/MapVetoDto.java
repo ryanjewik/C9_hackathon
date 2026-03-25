@@ -2,11 +2,20 @@ package com.example.data_service.dto;
 
 public class MapVetoDto {
     private Integer id;
-    private Integer matchId;
     private String type;
-    private Integer teamId;
+    
     private String mapSelected;
     private Integer turn;
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private Integer matchId;
+
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private Integer teamId;
+
+    @com.fasterxml.jackson.annotation.JsonProperty("team")
+    private TeamDto teamObj;
+    @com.fasterxml.jackson.annotation.JsonProperty("match")
+    private MatchSummaryDto matchObj;
 
     public MapVetoDto() {}
 
@@ -31,4 +40,8 @@ public class MapVetoDto {
     public void setMapSelected(String mapSelected) { this.mapSelected = mapSelected; }
     public Integer getTurn() { return turn; }
     public void setTurn(Integer turn) { this.turn = turn; }
+    public TeamDto getTeamObj() { return teamObj; }
+    public void setTeamObj(TeamDto teamObj) { this.teamObj = teamObj; }
+    public MatchSummaryDto getMatchObj() { return matchObj; }
+    public void setMatchObj(MatchSummaryDto matchObj) { this.matchObj = matchObj; }
 }

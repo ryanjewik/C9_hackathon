@@ -14,4 +14,10 @@ public interface TournamentPlacementRepository extends JpaRepository<TournamentP
 
     @Query("select new com.example.data_service.dto.TournamentPlacementDto(t.id, t.tournamentId, t.placement, t.esportsTeamId, t.prizeMoney, t.stage, t.players) from TournamentPlacement t where t.id = :id")
     TournamentPlacementDto findDtoById(@Param("id") Integer id);
+
+    @Query("SELECT t FROM TournamentPlacement t LEFT JOIN FETCH t.teamEntity LEFT JOIN FETCH t.tournamentEntity WHERE t.id = :id")
+    java.util.Optional<TournamentPlacement> findWithRelationsById(@Param("id") Integer id);
+
+    @Query("SELECT DISTINCT t FROM TournamentPlacement t LEFT JOIN FETCH t.teamEntity LEFT JOIN FETCH t.tournamentEntity WHERE t.id IN :ids")
+    java.util.List<TournamentPlacement> findAllWithRelationsByIdIn(@Param("ids") java.util.List<Integer> ids);
 }

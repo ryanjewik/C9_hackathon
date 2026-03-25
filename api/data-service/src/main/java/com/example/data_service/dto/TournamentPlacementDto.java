@@ -2,12 +2,22 @@ package com.example.data_service.dto;
 
 public class TournamentPlacementDto {
     private Integer id;
+    @com.fasterxml.jackson.annotation.JsonIgnore
     private Integer tournamentId;
     private String placement;
+    @com.fasterxml.jackson.annotation.JsonIgnore
     private Integer esportsTeamId;
     private String prizeMoney;
     private String stage;
-    private java.util.List<Integer> players;
+
+    @com.fasterxml.jackson.annotation.JsonProperty("tournament")
+    private TournamentDto tournamentObj;
+
+    @com.fasterxml.jackson.annotation.JsonProperty("team")
+    private TeamDto teamObj;
+
+    @com.fasterxml.jackson.annotation.JsonProperty("players")
+    private java.util.List<PlayerDto> playersObj;
 
     public TournamentPlacementDto() {}
 
@@ -18,7 +28,16 @@ public class TournamentPlacementDto {
         this.esportsTeamId = esportsTeamId;
         this.prizeMoney = prizeMoney;
         this.stage = stage;
-        this.players = players;
+        // keep legacy constructor behavior for internal use
+        if (players != null) this.playersObj = new java.util.ArrayList<>();
+    }
+
+    // New constructor used by service mapping
+    public TournamentPlacementDto(Integer id, String placement, String prizeMoney, String stage) {
+        this.id = id;
+        this.placement = placement;
+        this.prizeMoney = prizeMoney;
+        this.stage = stage;
     }
 
     public Integer getId() { return id; }
@@ -33,6 +52,12 @@ public class TournamentPlacementDto {
     public void setPrizeMoney(String prizeMoney) { this.prizeMoney = prizeMoney; }
     public String getStage() { return stage; }
     public void setStage(String stage) { this.stage = stage; }
-    public java.util.List<Integer> getPlayers() { return players; }
-    public void setPlayers(java.util.List<Integer> players) { this.players = players; }
+    public java.util.List<PlayerDto> getPlayersObj() { return playersObj; }
+    public void setPlayersObj(java.util.List<PlayerDto> playersObj) { this.playersObj = playersObj; }
+
+    public TournamentDto getTournamentObj() { return tournamentObj; }
+    public void setTournamentObj(TournamentDto tournamentObj) { this.tournamentObj = tournamentObj; }
+
+    public TeamDto getTeamObj() { return teamObj; }
+    public void setTeamObj(TeamDto teamObj) { this.teamObj = teamObj; }
 }
