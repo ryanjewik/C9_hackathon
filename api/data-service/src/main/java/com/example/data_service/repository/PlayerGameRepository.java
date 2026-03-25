@@ -14,4 +14,7 @@ public interface PlayerGameRepository extends JpaRepository<PlayerGame, Integer>
 
     @Query("select new com.example.data_service.dto.PlayerGameDto(p.id, p.matchId, p.gameId, p.playerId, p.teamId, p.rosterId, p.tournamentId, p.map, p.agent, p.rating, p.acs, p.kills, p.deaths, p.assists, p.kast, p.adr, p.hsPercent, p.fk, p.fd) from PlayerGame p where p.id = :id")
     PlayerGameDto findDtoById(@Param("id") Integer id);
+
+    @Query("SELECT p FROM PlayerGame p WHERE p.gameId IN :gameIds")
+    java.util.List<com.example.data_service.entity.PlayerGame> findAllByGameIdIn(@Param("gameIds") java.util.List<Integer> gameIds);
 }

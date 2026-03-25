@@ -37,4 +37,15 @@ public class MapVeto {
     public void setMapSelected(String mapSelected) { this.mapSelected = mapSelected; }
     public Integer getTurn() { return turn; }
     public void setTurn(Integer turn) { this.turn = turn; }
+    
+    @jakarta.persistence.ManyToOne
+    @jakarta.persistence.JoinColumn(name = "team_id", referencedColumnName = "id", insertable = false, updatable = false)
+    private Team teamEntity;
+
+    @jakarta.persistence.ManyToOne
+    @jakarta.persistence.JoinColumn(name = "match_id", referencedColumnName = "id", insertable = false, updatable = false)
+    private Match matchEntity;
+
+    public Team getTeamEntity() { return teamEntity; }
+    public Match getMatchEntity() { return matchEntity; }
 }
