@@ -11,6 +11,7 @@ public class GameScoreDto {
     private String team2Name;
     private String map;
     private Integer winner;
+    private java.util.List<Integer> playerGameIds;
 
     public GameScoreDto() {}
 
@@ -47,4 +48,6 @@ public class GameScoreDto {
     public void setMap(String map) { this.map = map; }
     public Integer getWinner() { return winner; }
     public void setWinner(Integer winner) { this.winner = winner; }
+    public java.util.List<Integer> getPlayerGameIds() { return playerGameIds; }
+    public void setPlayerGameIds(java.util.List<Integer> playerGameIds) { this.playerGameIds = playerGameIds; }
 }

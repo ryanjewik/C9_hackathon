@@ -31,6 +31,14 @@ public class TournamentPlacement {
     @Convert(converter = PostgresIntegerArrayConverter.class)
     private List<Integer> players;
 
+    @jakarta.persistence.ManyToOne
+    @jakarta.persistence.JoinColumn(name = "esports_team_id", referencedColumnName = "id", insertable = false, updatable = false)
+    private Team teamEntity;
+
+    @jakarta.persistence.ManyToOne
+    @jakarta.persistence.JoinColumn(name = "tournament_id", referencedColumnName = "id", insertable = false, updatable = false)
+    private Tournament tournamentEntity;
+
     // getters/setters
     public Integer getId() { return id; }
     public void setId(Integer id) { this.id = id; }
@@ -46,4 +54,7 @@ public class TournamentPlacement {
     public void setStage(String stage) { this.stage = stage; }
     public List<Integer> getPlayers() { return players; }
     public void setPlayers(List<Integer> players) { this.players = players; }
+
+    public Team getTeamEntity() { return teamEntity; }
+    public Tournament getTournamentEntity() { return tournamentEntity; }
 }

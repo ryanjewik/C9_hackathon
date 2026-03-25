@@ -20,6 +20,8 @@ public class MatchDto {
     private String map3;
     private String map4;
     private String map5;
+    private java.util.List<Integer> mapVetoIds;
+    private java.util.List<Integer> gameScoreIds;
 
     public MatchDto() {}
 
@@ -84,4 +86,8 @@ public class MatchDto {
     public void setMap4(String map4) { this.map4 = map4; }
     public String getMap5() { return map5; }
     public void setMap5(String map5) { this.map5 = map5; }
+    public java.util.List<Integer> getMapVetoIds() { return mapVetoIds; }
+    public void setMapVetoIds(java.util.List<Integer> mapVetoIds) { this.mapVetoIds = mapVetoIds; }
+    public java.util.List<Integer> getGameScoreIds() { return gameScoreIds; }
+    public void setGameScoreIds(java.util.List<Integer> gameScoreIds) { this.gameScoreIds = gameScoreIds; }
 }

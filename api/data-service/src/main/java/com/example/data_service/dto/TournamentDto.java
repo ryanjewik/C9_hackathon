@@ -1,7 +1,9 @@
 package com.example.data_service.dto;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public class TournamentDto {
 	private Integer id;
 	private String name;
@@ -16,6 +18,11 @@ public class TournamentDto {
 	private String status;
 
 	public TournamentDto() {}
+
+	public TournamentDto(Integer id, String name) {
+		this.id = id;
+		this.name = name;
+	}
 
 	public TournamentDto(Integer id, String name, String tier, String startDate, String endDate, String location, String prizePool, String status) {
 		this.id = id;
