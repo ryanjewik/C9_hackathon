@@ -6,7 +6,10 @@ public class PlayerGameDto {
     private Integer id;
     private Integer matchId;
     private Integer gameId;
+    @com.fasterxml.jackson.annotation.JsonIgnore
     private Integer playerId;
+    @com.fasterxml.jackson.annotation.JsonProperty("player")
+    private PlayerDto playerObj;
     private Integer teamId;
     private Integer rosterId;
     private Integer tournamentId;
@@ -46,6 +49,9 @@ public class PlayerGameDto {
         this.fk = fk;
         this.fd = fd;
     }
+
+    public PlayerDto getPlayerObj() { return playerObj; }
+    public void setPlayerObj(PlayerDto playerObj) { this.playerObj = playerObj; }
 
     public Integer getId() {
         return id;
