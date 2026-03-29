@@ -1,6 +1,0 @@
- - run the scraping script and update our postgres database
- - update the scraping script to scrape ongoing events
-
- - add real samples to train the CNN
- - update the CNN to adjust for phoenix/clove/kayo/sage revives. if the icon is there discount the kill / reset the cooldown                
- - integrate the CNN into our VOD processor

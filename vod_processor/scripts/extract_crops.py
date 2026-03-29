@@ -6,6 +6,11 @@ Usage:
     python extract_crops.py --vods 4 5          # Process specific VODs
     python extract_crops.py --vods 1 2 3 4 5 6 7  # All VODs
 
+    # Strict roster mode (match only against these 10 players):
+    python extract_crops.py --vods 8 \\
+        --left-players keznit Rossy P0PPIN Eggsterr Inspire \\
+        --right-players penny Demon1 Zellsis v1c Xeppaa
+
 Crops are saved to /app/outputs/crops/ with filenames encoding the VOD
 number and timestamp: vod{N}_crop_{NNNNN}_t{ms}ms.png
 """
@@ -20,7 +25,8 @@ sys.path.insert(0, '/app')
 from app.services.processing.vod_processor import VODProcessor
 
 
-def extract_crops_from_vod(vod_number: int, output_dir: str, crops_dir: str):
+def extract_crops_from_vod(vod_number: int, output_dir: str, crops_dir: str,
+                           left_players: list = None, right_players: list = None):
     """Run VOD processing on a single file, collecting weapon icon crops."""
     if vod_number == 1:
         video_filename = "match_vod.mp4"
@@ -35,11 +41,16 @@ def extract_crops_from_vod(vod_number: int, output_dir: str, crops_dir: str):
 
     print("=" * 70)
     print(f"EXTRACTING CROPS: {video_filename}")
+    if left_players and right_players:
+        print(f"  STRICT ROSTER: left={left_players}, right={right_players}")
     print("=" * 70)
 
     job_id = f"crops-vod{vod_number}-{datetime.now().strftime('%H%M%S')}"
 
     processor = VODProcessor()
+
+    # Determine if strict roster mode
+    strict = bool(left_players and right_players)
 
     # Run processing with auto-detect (no team/player info passed)
     result = processor.process_vod(
@@ -48,8 +59,9 @@ def extract_crops_from_vod(vod_number: int, output_dir: str, crops_dir: str):
         output_dir=output_dir,
         left_team=None,
         right_team=None,
-        left_player_pool=None,
-        right_player_pool=None,
+        left_player_pool=left_players,
+        right_player_pool=right_players,
+        strict_roster=strict,
     )
 
     # Rename crops from generic crop_NNNNN to include VOD number
@@ -87,6 +99,14 @@ def main():
         '--vods', nargs='+', type=int, default=[4, 5, 6, 7],
         help='VOD numbers to process (default: 4 5 6 7)'
     )
+    parser.add_argument(
+        '--left-players', nargs='+', type=str, default=None,
+        help='Exact player names for the left (teal) team (enables strict roster mode)'
+    )
+    parser.add_argument(
+        '--right-players', nargs='+', type=str, default=None,
+        help='Exact player names for the right (orange) team (enables strict roster mode)'
+    )
     args = parser.parse_args()
 
     output_dir = "/app/outputs"
@@ -95,7 +115,11 @@ def main():
 
     total_crops = 0
     for vod_num in args.vods:
-        count = extract_crops_from_vod(vod_num, output_dir, crops_dir)
+        count = extract_crops_from_vod(
+            vod_num, output_dir, crops_dir,
+            left_players=args.left_players,
+            right_players=args.right_players,
+        )
         total_crops += count
         print(f"\n  Running total: {total_crops} crops\n")
 
