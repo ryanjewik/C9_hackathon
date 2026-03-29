@@ -16,6 +16,7 @@ services:
         # initdb.d so it will be applied pre-restore by our script.
         - ./restore.sh:/docker-entrypoint-initdb.d/00-restore.sh:ro
         - ./schema.sql:/backup/schema.sql:ro
+        - ./users_schema.sql:/backup/users_schema.sql:ro
         - ./backup.sql:/backup/backup.dump:ro
       restart: unless-stopped
       healthcheck:

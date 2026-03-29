@@ -1,13 +1,13 @@
 package com.example.identity_service.dto;
 
-public class CredentialsDto {
+public class LoginDto {
     private String username;
     private String password;
 
 
-    public CredentialsDto() {}
+    public LoginDto() {}
 
-    public CredentialsDto(String username, String password){
+    public LoginDto(String username, String password){
         this.username = username;
         this.password = password;
     }

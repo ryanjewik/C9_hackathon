@@ -15,12 +15,15 @@ psql --username="$POSTGRES_USER" --dbname="$DB_NAME" -c "CREATE EXTENSION IF NOT
 
 # If a schema file is provided, apply it first (idempotent). This helps when
 # the provided backup is data-only or pg_restore doesn't recreate schema.
-SCHEMA_FILE="/docker-entrypoint-initdb.d/schema.sql"
-if [ -f "$SCHEMA_FILE" ]; then
-    echo "Schema file $SCHEMA_FILE found — applying before restore..."
-    psql --username="$POSTGRES_USER" --dbname="$DB_NAME" -f "$SCHEMA_FILE" || true
-    echo "Schema apply (pre-restore) attempted."
-fi
+# Support either schema.sql or users_schema.sql in the entrypoint folder.
+for SCHEMA_FILE in /docker-entrypoint-initdb.d/schema.sql /docker-entrypoint-initdb.d/users_schema.sql; do
+    if [ -f "$SCHEMA_FILE" ]; then
+        echo "Schema file $SCHEMA_FILE found — applying before restore..."
+        psql --username="$POSTGRES_USER" --dbname="$DB_NAME" -f "$SCHEMA_FILE" || true
+        echo "Schema apply (pre-restore) attempted."
+        break
+    fi
+done
 
 # Check if the file is a custom format pg_dump
 if [ -f "$BACKUP_FILE" ] && pg_restore -l "$BACKUP_FILE" >/dev/null 2>&1; then

@@ -15,12 +15,15 @@ psql --username="$POSTGRES_USER" --dbname="$DB_NAME" -c "CREATE EXTENSION IF NOT
 
 # If a schema file is provided, apply it first (idempotent). This helps when
 # the provided backup is data-only or pg_restore doesn't recreate schema.
-SCHEMA_FILE="/backup/schema.sql"
-if [ -f "$SCHEMA_FILE" ]; then
-    echo "Schema file $SCHEMA_FILE found — applying before restore..."
-    psql --username="$POSTGRES_USER" --dbname="$DB_NAME" -f "$SCHEMA_FILE" || true
-    echo "Schema apply (pre-restore) attempted."
-fi
+# Support either schema.sql or users_schema.sql placed in the /backup folder.
+for SCHEMA_FILE in /backup/schema.sql /backup/users_schema.sql; do
+    if [ -f "$SCHEMA_FILE" ]; then
+        echo "Schema file $SCHEMA_FILE found — applying before restore..."
+        psql --username="$POSTGRES_USER" --dbname="$DB_NAME" -f "$SCHEMA_FILE" || true
+        echo "Schema apply (pre-restore) attempted."
+        break
+    fi
+done
 
 # Check if the backup file is a pg_restore-compatible archive. Some minimal
 # postgres images don't include the `file` utility, so use `pg_restore -l` to
