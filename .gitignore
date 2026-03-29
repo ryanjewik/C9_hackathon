@@ -46,3 +46,5 @@ testing/scraping_testing/README.md
 testing/cv_testing/architecture.md
 
 crops/
+local_crops*
+extract_log*

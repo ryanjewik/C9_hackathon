@@ -178,6 +178,7 @@ class VODProcessor:
         map_name: Optional[str] = None,
         left_player_pool: Optional[List[str]] = None,
         right_player_pool: Optional[List[str]] = None,
+        strict_roster: bool = False,
     ) -> Dict[str, Any]:
         """
         Process a VOD file and extract timeline data.
@@ -192,6 +193,8 @@ class VODProcessor:
             map_name: Map name (e.g., "Abyss")
             left_player_pool: All players who have ever played for left team (for OCR validation)
             right_player_pool: All players who have ever played for right team (for OCR validation)
+            strict_roster: If True, use ONLY the provided player pools for matching
+                          (skip DB historical roster loading). Best when exact 5v5 rosters known.
             
         Returns:
             Dictionary with processing results
@@ -203,12 +206,15 @@ class VODProcessor:
         self._left_team_code = left_team
         self._right_team_code = right_team
         self._map_name = map_name
+        self._strict_roster = strict_roster
         
         # Store player pools for OCR validation
         self._left_player_pool = left_player_pool
         self._right_player_pool = right_player_pool
         
         print(f"[{job_id}] Team codes: left={left_team}, right={right_team}, map={map_name}")
+        if strict_roster:
+            print(f"[{job_id}] STRICT ROSTER MODE — matching only against provided players")
         if left_player_pool:
             print(f"[{job_id}] Left player pool ({len(left_player_pool)}): {left_player_pool}")
         if right_player_pool:
@@ -306,11 +312,18 @@ class VODProcessor:
                 # Reset video position after team detection
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             
-            # Extract player names from first few seconds
-            self._job_manager.update_job_status(
-                job_id, JobStatus.PROCESSING, "Extracting player names..."
-            )
-            self._extract_players_from_video(cap, fps, match_players, left_player_pool, right_player_pool)
+            # Strict roster: skip HUD extraction, use provided rosters directly
+            if strict_roster and left_player_pool and right_player_pool:
+                print(f"[{job_id}] Strict roster: skipping HUD player extraction")
+                self._player_matcher.set_match_players(
+                    left_player_pool, right_player_pool, strict=True
+                )
+            else:
+                # Extract player names from first few seconds
+                self._job_manager.update_job_status(
+                    job_id, JobStatus.PROCESSING, "Extracting player names..."
+                )
+                self._extract_players_from_video(cap, fps, match_players, left_player_pool, right_player_pool)
             
             # Reset video to start
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -523,7 +536,32 @@ class VODProcessor:
             # Filter out ghost players (OCR artifacts that matched historical roster names)
             # A ghost player appears only 1-2 times total (kills + deaths) when real players
             # typically have many more interactions across a full match
-            all_events = self._filter_ghost_player_kills(job_id, all_events)
+            all_events, ghost_removed = self._filter_ghost_player_kills(job_id, all_events)
+            
+            # Delete orphan crop files for ghost-filtered events (Fix 10)
+            if ghost_removed:
+                orphan_count = 0
+                for ev in ghost_removed:
+                    _key = (
+                        ev.payload.get("killer_name", "").lower(),
+                        ev.payload.get("victim_name", "").lower(),
+                        int(ev.t_ms),
+                    )
+                    for d in detectors:
+                        for fpath in d._crop_file_paths.pop(_key, []):
+                            try:
+                                os.remove(fpath)
+                                orphan_count += 1
+                            except OSError:
+                                pass
+                if orphan_count:
+                    print(f"[{job_id}] Ghost orphan cleanup: deleted {orphan_count} crop/diag files")
+            
+            # Collect REPLAY-removed kills from all detectors
+            replay_removed = []
+            for d in detectors:
+                if hasattr(d, '_replay_removed_kills'):
+                    replay_removed.extend(d._replay_removed_kills)
             
             # Build timeline
             timeline = self._build_timeline(
@@ -547,6 +585,17 @@ class VODProcessor:
             timeline_path = os.path.join(output_dir, f"{job_id}_timeline.json")
             with open(timeline_path, "w") as f:
                 json.dump(timeline, f, indent=2)
+            
+            # Save invalidated kills (ghost player + replay filter removals)
+            if ghost_removed or replay_removed:
+                invalidated = {
+                    "ghost_removed": [asdict(e) for e in ghost_removed],
+                    "replay_removed": [asdict(e) for e in replay_removed],
+                }
+                inv_path = os.path.join(output_dir, f"{job_id}_invalidated.json")
+                with open(inv_path, "w") as f:
+                    json.dump(invalidated, f, indent=2)
+                print(f"[{job_id}] Saved {len(ghost_removed)} ghost + {len(replay_removed)} replay invalidated kills to {inv_path}")
             
             # Save kill summary
             kill_events = [e for e in all_events if e.type == "KILL_EVENT"]
@@ -940,7 +989,7 @@ class VODProcessor:
         
         # Filter out kills involving ghost players
         filtered_events = []
-        removed_count = 0
+        ghost_removed = []
         
         for e in events:
             if e.type == "KILL_EVENT":
@@ -949,9 +998,9 @@ class VODProcessor:
                 
                 if victim in ghost_players:
                     # Remove this kill - the victim is a ghost player
-                    removed_count += 1
                     t_sec = e.t_ms / 1000
                     print(f"[{job_id}] Ghost filter removed: {killer} killed {victim} at t={t_sec:.1f}s (ghost victim)")
+                    ghost_removed.append(e)
                     continue
                     
                 # Note: We don't filter by ghost killer because if OCR read the killer name,
@@ -959,10 +1008,10 @@ class VODProcessor:
             
             filtered_events.append(e)
         
-        if removed_count > 0:
-            print(f"[{job_id}] Ghost player filter: removed {removed_count} kill events")
+        if ghost_removed:
+            print(f"[{job_id}] Ghost player filter: removed {len(ghost_removed)} kill events")
         
-        return filtered_events
+        return filtered_events, ghost_removed
     
     def _build_kill_summary(self, kill_events: List[Event], round_transitions: List[Event]) -> Dict[str, Any]:
         """Build a summary of kills with team assignments."""
@@ -2384,6 +2433,7 @@ class KillfeedDetector(BaseDetector):
         # Crop saving: when set, weapon icon crops are written to this directory
         self._crop_output_dir: Optional[str] = None
         self._crop_counter: int = 0
+        self._crop_file_paths: dict = {}  # (killer_lower, victim_lower, int_t_ms) -> [path, ...]
         self._ult_diagnostics: list = []  # collected per-crop ult badge metrics
         # Deferred crop: wait 2 frames for the row to stabilize before cropping.
         # Key: (killer_norm, victim_norm, round) -> dict with row_img, ktr, vtl, etc.
@@ -2401,6 +2451,7 @@ class KillfeedDetector(BaseDetector):
         # killfeed starts showing replay content
         self._REPLAY_LOOKBACK_MS: float = 1500  # 1.5 seconds lookback
         self._pending_kills: List[Event] = []  # Buffer kills before confirming them
+        self._replay_removed_kills: List[Event] = []  # Kills removed by REPLAY filter
     
     def on_replay_detected(self, replay_start_ms: float):
         """
@@ -2412,13 +2463,18 @@ class KillfeedDetector(BaseDetector):
         original_count = len(self._pending_kills)
         
         # Filter out kills within the lookback window
-        self._pending_kills = [
-            k for k in self._pending_kills
-            if k.t_ms < cutoff_ms
-        ]
+        kept = []
+        removed = []
+        for k in self._pending_kills:
+            if k.t_ms < cutoff_ms:
+                kept.append(k)
+            else:
+                removed.append(k)
+        self._pending_kills = kept
         
-        filtered_count = original_count - len(self._pending_kills)
+        filtered_count = len(removed)
         if filtered_count > 0:
+            self._replay_removed_kills.extend(removed)
             print(f"[KillfeedDetector] REPLAY lookback filter: removed {filtered_count} kill(s) from t={cutoff_ms/1000:.1f}s to t={replay_start_ms/1000:.1f}s")
     
     def set_round_start(self, timestamp_ms: float, round_number: int = 0, left_score: int = 0, right_score: int = 0):
@@ -3045,6 +3101,10 @@ class KillfeedDetector(BaseDetector):
             )
             cv2.imwrite(crop_path, icon_img)
 
+            # Track crop paths for ghost orphan cleanup
+            _crop_key = (pc["killer_name"].lower(), pc["victim_name"].lower(), int(t_ms))
+            self._crop_file_paths.setdefault(_crop_key, []).append(crop_path)
+
             # Diagnostic: save annotated full row alongside crop
             try:
                 diag_dir = os.path.join(self._crop_output_dir, "diag")
@@ -3071,6 +3131,7 @@ class KillfeedDetector(BaseDetector):
                     cv2.rectangle(diag_row, (ub0, 0), (ub1, rh), (255, 255, 0), 2)
                 diag_path = os.path.join(diag_dir, f"row_{self._crop_counter:05d}_t{int(t_ms)}ms.png")
                 cv2.imwrite(diag_path, diag_row)
+                self._crop_file_paths.setdefault(_crop_key, []).append(diag_path)
             except Exception:
                 pass
 
@@ -3903,6 +3964,15 @@ class KillfeedDetector(BaseDetector):
                 right_bound = int(round(victim_text_left))
                 gap = right_bound - left_bound
 
+                # ── Position sanity check ──
+                # Real killfeed rows sit on the right side of the
+                # screen.  kR < 30% of row width indicates the OCR
+                # read text from a non-killfeed element (e.g. replay
+                # economy overlay, character splash screen).
+                if left_bound < w * 0.30:
+                    print(f"[CROP-DBG] crop#{crop_num} SKIP: kR={left_bound} < {w*0.30:.0f} (position too far left)")
+                    return None
+
                 # ── Ability icon detection ──
                 # Ability icons are small squares (~h×h px).  When
                 # PaddleOCR merges the icon into the killer name bbox
@@ -3936,6 +4006,7 @@ class KillfeedDetector(BaseDetector):
                 # Detect this by checking if ktr pixels are team-colored;
                 # if not, scan leftward to find where team color ends.
                 # Only attempt when gap is non-trivial (>= 20px).
+                ktr_skip_bright = False  # Fix 11: track when weapon icon sits at kR
                 if gap >= 20:
                     hsv_row = cv2.cvtColor(row_img, cv2.COLOR_BGR2HSV)
                     teal_m = cv2.inRange(hsv_row, np.array([75, 50, 80]), np.array([115, 255, 255]))
@@ -3946,9 +4017,22 @@ class KillfeedDetector(BaseDetector):
                     strip_x1 = min(w, left_bound + 2)
                     strip = team_color_mask[:, strip_x0:strip_x1]
                     color_frac = np.count_nonzero(strip) / max(1, strip.size)
-                    if color_frac < 0.45:
-                        min_scan = int(gap * 0.8)
-                        scan_limit = max(int(w * 0.10), left_bound - min_scan)
+                    # Brightness/saturation pre-check: if kR pixels are bright
+                    # and unsaturated, they belong to a weapon icon (white/gray),
+                    # not a gap between name and icon.  Skip ktr correction to
+                    # avoid scanning left through the entire weapon icon.
+                    hsv_strip = hsv_row[:, strip_x0:strip_x1]
+                    med_v = float(np.median(hsv_strip[:, :, 2]))
+                    med_s = float(np.median(hsv_strip[:, :, 1]))
+                    bright_unsaturated = (med_v > 170 and med_s < 60)
+                    if bright_unsaturated:
+                        ktr_skip_bright = True
+                        print(f"[CROP-DBG] crop#{crop_num} ktr skip correction: bright weapon icon at kR (V={med_v:.0f} S={med_s:.0f})")
+                    elif color_frac < 0.45:
+                        # Cap correction distance: large corrections
+                        # land on same-color text from different rows.
+                        max_correction = max(50, int(gap * 0.40))
+                        scan_limit = max(int(w * 0.10), left_bound - max_correction)
                         original_left_bound = left_bound
                         new_ktr = left_bound
                         for sx in range(left_bound - 1, scan_limit - 1, -1):
@@ -4000,7 +4084,7 @@ class KillfeedDetector(BaseDetector):
                     if gap > 140:
                         search_x0 = max(int(w * 0.12), left_bound)
                     else:
-                        expand_left = max(25, int(gap * 0.50))
+                        expand_left = max(20, int(gap * 0.35))
                         search_x0 = max(int(w * 0.12), left_bound - expand_left)
                     search_x1 = min(int(w * 0.85), right_bound + expand_right)
                     self._last_search_zone = (search_x0, search_x1)
@@ -4088,7 +4172,7 @@ class KillfeedDetector(BaseDetector):
                                         if (c[0] + c[2] // 2) <= right_bound - hs_margin]
                         if bp_valid:
                             bp_valid = [c for c in bp_valid
-                                        if (c[0] + c[2] // 2) >= left_bound - left_filter_margin]
+                                        if (c[0] + c[2] // 2) >= left_filter_x]
                         if bp_valid:
                             print(f"[CROP-DBG] crop#{crop_num} saturation fallback found {len(bp_valid)} contours")
                         else:
@@ -4128,7 +4212,7 @@ class KillfeedDetector(BaseDetector):
                         # Left margin: generous for small gaps (gun
                         # extends left), tight for large gaps (text leak).
                         if gap <= 140:
-                            left_margin = max(20, int(gap * 0.30))
+                            left_margin = max(15, int(gap * 0.20))
                         else:
                             left_margin = max(8, int(gap * 0.10))
                         right_margin = max(15, int(gap * 0.20))
@@ -4139,7 +4223,7 @@ class KillfeedDetector(BaseDetector):
                         # into the headshot-icon zone near vL.  The
                         # hs_margin filtered contour *centers*, but a
                         # contour edge can still reach into hs territory.
-                        hs_right_limit = right_bound - max(15, int(gap * 0.12))
+                        hs_right_limit = right_bound - max(18, int(gap * 0.15))
                         if icon_x1 > hs_right_limit:
                             icon_x1 = hs_right_limit
 
@@ -4152,6 +4236,23 @@ class KillfeedDetector(BaseDetector):
                         pad = max(4, int(h * 0.15))
                         x0 = max(0, icon_x0 - pad)
                         x1 = min(w, icon_x1 + pad)
+
+                        # Killer-text guard: the crop must never extend
+                        # left of the ORIGINAL kR (pre-correction).
+                        # The weapon icon lives between the two names;
+                        # anything left of kR is killer name text.
+                        # Fix 11: when ktr-skip detected a weapon icon at
+                        # kR, the icon genuinely extends left of kR — use
+                        # a relaxed margin (20px) instead of the strict 4px.
+                        original_kR = int(round(killer_text_right))
+                        guard_margin = 20 if ktr_skip_bright else 4
+                        if x0 < original_kR - guard_margin:
+                            print(f"[CROP-DBG] crop#{crop_num} left-clamp x0={x0} -> {original_kR - guard_margin} (killer text guard, kR={original_kR}, margin={guard_margin})")
+                            x0 = original_kR - guard_margin
+
+                        # Re-apply headshot guard after padding
+                        if x1 > hs_right_limit + 2:
+                            x1 = hs_right_limit + 2
 
                         if (x1 - x0) < MIN_CROP_W:
                             mid = (x0 + x1) // 2
@@ -4337,10 +4438,17 @@ class KillfeedDetector(BaseDetector):
                 "victim_pct": round(victim_pct, 4),
                 "largest_blob": int(largest_area),
                 "bright_pct": round(bright_pct, 4),
-                "detected": victim_pct >= 0.15 and largest_area >= 150 and bright_pct >= 0.20,
+                "detected": victim_pct >= 0.15 and killer_pct < 0.58 and largest_area >= 150 and bright_pct >= 0.20,
             })
 
             if victim_pct < 0.15:
+                return None
+
+            # Killer-colour ceiling: false positives from headshot icons
+            # have killer_pct > 60% because the region is almost entirely
+            # killer team colour.  Real ult badges split the region,
+            # pulling killer_pct down to ~40-53%.
+            if killer_pct >= 0.58:
                 return None
 
             # Contiguity check — require a substantial blob, not scatter.

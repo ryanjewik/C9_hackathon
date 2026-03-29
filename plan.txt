@@ -1,0 +1,88 @@
+curl -i -u dev:devpass "http://localhost:8081/api/players?page=0&size=10"
+
+http://localhost:8081/api/players/458
+
+FRONTEND TODO:
+1. can start building out the frontend for login / admin etc
+2. API documentation to include schemas, examples, and how to authenticate and rate limit information
+
+
+API / BACKEND TODO:
+1. create login / account / team admin endpoints / api key endpoints
+2. create an account, team, and api key
+3. setup auth on data, gateway, and identity services
+ - data services requires jwt api token validation
+ - login and identity services have a user jwt / session token that we validate to get apikeys and such
+ - api key need for auth/token to get the api jwt
+4. setup gateway to send requests to correct services
+5. rate limiting handled by redis cache via sliding window
+ - remove old entries, count the total valid requests left, compare to limit, and reject or add request accordingly
+6. cache common requests or most recent requests AFTER authenticated
+7. integrate LGTM stack to handle monitoring. metrics on performance and how often our api is being used
+8. load balancing between two data services handled in gateway via round robin
+
+Scraping Script TODO:
+ - adjust scraping script to run on "ongoing events", run a scheduled job to update postgres database
+ - consider removing the "60 days" part of the schema
+
+VOD PROCESSOR TODO:
+1. get clean crops on weapons and abilities
+2. train CNN on classifying weapons and abilities
+3. include classification in the events, invalidate kills with revive ults to numerically adjust kill count and allow for the event to occur again
+4. minimap and agent icon tracking
+5. allow a mode for players to upload their own vods that will track:
+ - killfeed events
+ - minimap
+6. ability tracking optional
+
+VOD_PROCESSOR LIBRARY:
+1. have a youtube channel that can host the embedded VCT vods or get the vods from the official VCT site
+2. embed those videos on the website for scrubbing
+3. you can make a react scrubber to hide / show match events in a feed
+
+
+auth flow:
+1. user creates api key in dashboard
+2. user hits auth/token endpoint with api key in authentication headers to get jwt
+3. jwt is passed in with authentication headers in actual request to authenticate the call
+ - this will require some adjustments to the security config, we need to use the jwt to authenticate the call and ensure it represents the user
+4. once authenticated, using an account id we add a redis key "rate_limit:account:acc_123" with a set containing pairs (timestamp, request_id)
+5. we then remove old entries that are outside the window, count the total valid requests, compare to the limit, and reject or add the request accordingly
+
+api schema:
+rosters -> players, teams
+tournament_placements -> teams, tournaments, players
+matches -> map vetos, game scores
+game scores -> player games
+tournaments
+players
+teams
+map vetos
+player games -> players
+
+
+
+request flow:
+user logs in through identity-service
+user creates API key through identity-service
+client calls /auth/token through gateway
+gateway routes to identity-service
+identity-service returns JWT
+client calls analytics endpoints through gateway with JWT
+gateway verifies JWT + rate limits
+gateway forwards to data-service
+VOD uploads create async jobs for GPU processing
+
+Persistent services exist on EC2 whilst vod processor on ECS GPU tasks or AWS Batch GPU jobs
+ - ECS GPU tasks or AWS Batch GPU jobs needs private access to Postgre/Redis/EC2 services so we will attach it to the same private virtual cloud
+
+POST /auth/login          -> identity-service
+POST /auth/token          -> identity-service
+POST /auth/apikey         -> identity-service
+GET  /api/players         -> data-service
+GET  /api/matches         -> data-service
+POST /vod/jobs            -> ingestion service
+GET  /vod/jobs/{id}       -> ingestion service
+
+questions:
+should we run the processing on all VCT vods? then we have a contact page for other HUDs and individual users can upload as well but without specific features
