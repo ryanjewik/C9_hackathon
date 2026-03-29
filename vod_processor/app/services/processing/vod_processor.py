@@ -4084,7 +4084,9 @@ class KillfeedDetector(BaseDetector):
                     if gap > 140:
                         search_x0 = max(int(w * 0.12), left_bound)
                     else:
-                        expand_left = max(20, int(gap * 0.35))
+                        # Fix 13: increase left expansion to catch weapon
+                        # handles/stocks that extend well left of kR.
+                        expand_left = max(25, int(gap * 0.45))
                         search_x0 = max(int(w * 0.12), left_bound - expand_left)
                     search_x1 = min(int(w * 0.85), right_bound + expand_right)
                     self._last_search_zone = (search_x0, search_x1)
@@ -4137,8 +4139,9 @@ class KillfeedDetector(BaseDetector):
                     # Gap-dependent: for small gaps (<100) the gun fills
                     # most of the gap and extends left of kR, so be loose.
                     # For large gaps (>120) text leaks in, so be tight.
+                    # Fix 13: align with search zone expansion.
                     if gap <= 140:
-                        left_filter_x = left_bound - max(15, int(gap * 0.20))
+                        left_filter_x = left_bound - max(20, int(gap * 0.35))
                     else:
                         left_filter_x = left_bound - max(5, int(gap * 0.04))
                     if bp_valid:
@@ -4211,8 +4214,9 @@ class KillfeedDetector(BaseDetector):
                         # excluded headshot-icon contours from the cluster.
                         # Left margin: generous for small gaps (gun
                         # extends left), tight for large gaps (text leak).
+                        # Fix 13: align with search zone expansion.
                         if gap <= 140:
-                            left_margin = max(15, int(gap * 0.20))
+                            left_margin = max(20, int(gap * 0.30))
                         else:
                             left_margin = max(8, int(gap * 0.10))
                         right_margin = max(15, int(gap * 0.20))
@@ -4237,15 +4241,24 @@ class KillfeedDetector(BaseDetector):
                         x0 = max(0, icon_x0 - pad)
                         x1 = min(w, icon_x1 + pad)
 
-                        # Killer-text guard: the crop must never extend
-                        # left of the ORIGINAL kR (pre-correction).
-                        # The weapon icon lives between the two names;
-                        # anything left of kR is killer name text.
-                        # Fix 11: when ktr-skip detected a weapon icon at
-                        # kR, the icon genuinely extends left of kR — use
-                        # a relaxed margin (20px) instead of the strict 4px.
+                        # Killer-text guard: prevent crop from extending
+                        # into killer name text left of kR.
+                        # Fix 13: cluster-aware guard.  When contour
+                        # detection found a genuine icon cluster starting
+                        # left of kR, trust the contours — they are weapon
+                        # pixels, not killer text.  Allow up to gap*0.35
+                        # left of kR (capped at the contour extent + pad).
+                        # When ktr_skip_bright also fired, allow even more
+                        # (gap*0.45).  For clusters entirely right of kR,
+                        # keep the tight 4px guard.
                         original_kR = int(round(killer_text_right))
-                        guard_margin = 20 if ktr_skip_bright else 4
+                        icon_extends_left = icon_x0 < original_kR
+                        if icon_extends_left and ktr_skip_bright:
+                            guard_margin = max(25, int(gap * 0.45))
+                        elif icon_extends_left:
+                            guard_margin = max(20, int(gap * 0.35))
+                        else:
+                            guard_margin = 4
                         if x0 < original_kR - guard_margin:
                             print(f"[CROP-DBG] crop#{crop_num} left-clamp x0={x0} -> {original_kR - guard_margin} (killer text guard, kR={original_kR}, margin={guard_margin})")
                             x0 = original_kR - guard_margin
