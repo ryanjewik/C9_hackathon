@@ -1,10 +1,14 @@
--- Enable UUID generation
-CREATE EXTENSION IF NOT EXISTS 'pgcrypto';
+-- Shared schema for initial DB setup
+-- Idempotent: safe to run multiple times before/after restores
+
+-- Enable required extensions
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- =========================
 -- USERS
 -- =========================
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     username TEXT NOT NULL UNIQUE,
     email TEXT NOT NULL UNIQUE,
@@ -15,7 +19,7 @@ CREATE TABLE users (
 -- =========================
 -- TEAMS
 -- =========================
-CREATE TABLE teams (
+CREATE TABLE IF NOT EXISTS teams (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL,
     owner_user_id UUID NOT NULL,
@@ -27,10 +31,33 @@ CREATE TABLE teams (
         ON DELETE RESTRICT
 );
 
+CREATE TABLE IF NOT EXISTS invitations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    sending_team UUID NOT NULL,
+    receiving_player UUID NOT NULL,
+    sending_admin UUID NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT fk_sending_team
+        FOREIGN KEY (sending_team)
+        REFERENCES teams(id)
+        ON DELETE CASCADE,
+    
+    CONSTRAINT fk_receiving_player
+        FOREIGN KEY (receiving_player)
+        REFERENCES users(id)
+        ON DELETE CASCADE,
+    
+    CONSTRAINT fk_sending_admin
+        FOREIGN KEY (sending_admin)
+        REFERENCES users(id)
+        ON DELETE CASCADE
+);
+
 -- =========================
 -- TEAM MEMBERS (JOIN TABLE)
 -- =========================
-CREATE TABLE team_members (
+CREATE TABLE IF NOT EXISTS team_members (
     team_id UUID NOT NULL,
     user_id UUID NOT NULL,
     role TEXT NOT NULL DEFAULT 'member',
@@ -52,13 +79,13 @@ CREATE TABLE team_members (
 -- =========================
 -- API KEYS (TEAM LEVEL)
 -- =========================
-CREATE TABLE api_keys (
+CREATE TABLE IF NOT EXISTS api_keys (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     team_id UUID NOT NULL,
     name TEXT NOT NULL,
-    key_prefix TEXT NOT NULL, -- for display (e.g. sk_live_abcd)
+    key_prefix TEXT NOT NULL,
     key_hash TEXT NOT NULL UNIQUE,
-    status TEXT NOT NULL DEFAULT 'active', -- active, revoked
+    status TEXT NOT NULL DEFAULT 'active',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_used_at TIMESTAMPTZ,
 
@@ -71,13 +98,13 @@ CREATE TABLE api_keys (
 -- =========================
 -- VODS
 -- =========================
-CREATE TABLE vods (
+CREATE TABLE IF NOT EXISTS vods (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL,
     team_id UUID NOT NULL,
-    video_link TEXT NOT NULL, -- S3 path or similar
-    status TEXT NOT NULL DEFAULT 'uploaded', -- uploaded, processing, complete, failed
-    result_path TEXT, -- optional processed output
+    video_link TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'uploaded',
+    result_path TEXT,
     uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT fk_vods_team
@@ -91,14 +118,14 @@ CREATE TABLE vods (
 -- =========================
 
 -- Fast lookup for login
-CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
 -- API key lookup (critical for /auth/token)
-CREATE INDEX idx_api_keys_hash ON api_keys(key_hash);
+CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
 
 -- Team queries
-CREATE INDEX idx_team_members_user ON team_members(user_id);
-CREATE INDEX idx_vods_team ON vods(team_id);
+CREATE INDEX IF NOT EXISTS idx_team_members_user ON team_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_vods_team ON vods(team_id);
 
 -- Optional: recent activity
-CREATE INDEX idx_api_keys_last_used ON api_keys(last_used_at);
+CREATE INDEX IF NOT EXISTS idx_api_keys_last_used ON api_keys(last_used_at);

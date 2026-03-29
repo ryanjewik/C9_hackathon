@@ -195,11 +195,12 @@ services:
     ports:
       - "5433:5432"  # Use 5433 to avoid conflicts with host postgres
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      # Mount restore script and backup file
-      - ./vod_processor/db_init/restore.sh:/docker-entrypoint-initdb.d/00-restore.sh:ro
-      - ./backup.sql:/docker-entrypoint-initdb.d/backup.sql:ro
-      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    - postgres_data:/var/lib/postgresql/data
+    # Mount restore script and backup file
+    - ./vod_processor/db_init/restore.sh:/docker-entrypoint-initdb.d/00-restore.sh:ro
+    - ./backup.sql:/docker-entrypoint-initdb.d/backup.sql:ro
+    - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    - ./users_schema.sql:/docker-entrypoint-initdb.d/users_schema.sql:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]

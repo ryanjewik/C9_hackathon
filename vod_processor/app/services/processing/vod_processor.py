@@ -2285,6 +2285,27 @@ class FrameStateDetector:
                                     print(f"[FrameState] FLAWLESS detected at t={t_ms/1000:.1f}s - entering REPLAY mode")
                                     self._last_replay_detection_logged = True
                                 return True
+                            
+                            # ACE = all 5 enemies killed by one player
+                            if text_upper == "ACE":
+                                if not self._last_replay_detection_logged:
+                                    print(f"[FrameState] ACE detected at t={t_ms/1000:.1f}s - entering REPLAY mode")
+                                    self._last_replay_detection_logged = True
+                                return True
+                            
+                            # OVERTIME = overtime round overlay
+                            if "OVERTIME" in text_upper or "OVERTIM" in text_upper:
+                                if not self._last_replay_detection_logged:
+                                    print(f"[FrameState] OVERTIME detected at t={t_ms/1000:.1f}s - entering REPLAY mode")
+                                    self._last_replay_detection_logged = True
+                                return True
+                            
+                            # RED BULL = sponsor overlay (broadcast)
+                            if "REDBULL" in text_upper or ("RED" in text_upper and "BULL" in text_upper):
+                                if not self._last_replay_detection_logged:
+                                    print(f"[FrameState] RED BULL detected at t={t_ms/1000:.1f}s - entering REPLAY mode")
+                                    self._last_replay_detection_logged = True
+                                return True
                                 
                 except Exception:
                     pass
@@ -2960,14 +2981,19 @@ class KillfeedDetector(BaseDetector):
 
             # Log the accepted kill - just player names, no team prefix (OCR may include it)
             if is_self_kill:
-                print(f"[KILL] t={t_ms/1000:.1f}s R{display_round} ROW {actual_row_idx+1}: {killer_name_normalized} SELF-KILL (fall damage)")
+                print(f"[KILL] t={t_ms/1000:.1f}s R{display_round} ROW {actual_row_idx+1}: SELF-KILL (fall damage) {killer_name_normalized}")
             else:
                 print(f"[KILL] t={t_ms/1000:.1f}s R{display_round} ROW {actual_row_idx+1}: {killer_name_normalized} killed {victim_name_normalized}")
 
-            # Track this victim's death for per-round deduplication
+            # Track this victim's death for per-round deduplication.
+            # Same-team events are revives (e.g. Sage rez) — the victim is now
+            # ALIVE, so clear their death record instead of recording a new death.
             victim_key = victim_name_normalized.lower().strip() if victim_name_normalized != "Unknown" else None
             if victim_key:
-                self._victim_last_death[victim_key] = (t_ms, killer_name_normalized)
+                if killer_team and victim_team and killer_team == victim_team:
+                    self._victim_last_death.pop(victim_key, None)
+                else:
+                    self._victim_last_death[victim_key] = (t_ms, killer_name_normalized)
 
             # Defer weapon/ability icon crop  — store for 2 frames to let the
             # row stabilize (animation flash fades, text fully loads).
@@ -3086,6 +3112,12 @@ class KillfeedDetector(BaseDetector):
                 if badge is not None:
                     icon_img = badge
                     self._last_crop_method = "ult_badge"
+                    # Ult-badge revalidation: this kill used an ultimate ability,
+                    # meaning the victim genuinely died.  Reset per-round dedup
+                    # tracking so future kills of the same victim aren't suppressed.
+                    victim_key = pc["victim_name"].lower().strip()
+                    if victim_key in self._victim_last_death:
+                        del self._victim_last_death[victim_key]
             except Exception:
                 pass
 
@@ -3143,6 +3175,7 @@ class KillfeedDetector(BaseDetector):
         So if we see the same VICTIM die again within a short window, it's definitely a duplicate.
         
         Dedup tiers (in priority order):
+        0. PER-ROUND VICTIM: Same victim died already this round (catches replay dupes)
         1. VICTIM-FOCUSED: Same victim within 4s = duplicate (strongest signal, tightened)
         2. FULL MATCH: Same killer+victim within display window = duplicate
         3. PARTIAL MATCH: Either name very similar within tight window
@@ -3151,6 +3184,11 @@ class KillfeedDetector(BaseDetector):
         """
         _, killer_team, victim_team, killer_name, victim_name, row_idx = sig
         
+        # Same-team events (e.g. Sage revive) are NEVER duplicates.
+        # The victim is being brought back alive — always allow through.
+        if killer_team and victim_team and killer_team == victim_team:
+            return False
+        
         # Apply OCR correction BEFORE comparison - this normalizes common OCR errors
         killer_corrected = self._correct_ocr_name(killer_name)
         victim_corrected = self._correct_ocr_name(victim_name)
@@ -3158,6 +3196,18 @@ class KillfeedDetector(BaseDetector):
         # Normalize names for comparison (strip team prefixes)
         killer_base = self._strip_team_prefix(killer_corrected)
         victim_base = self._strip_team_prefix(victim_corrected)
+        
+        # TIER 0: Per-round victim death tracking (catches replay duplicates 10-30s apart)
+        victim_key = victim_base.lower().strip() if victim_base and victim_base != "Unknown" else None
+        if victim_key and victim_key in self._victim_last_death:
+            last_death_time, last_killer = self._victim_last_death[victim_key]
+            time_since_death = t_ms - last_death_time
+            if time_since_death < self.ROUND_DEDUP_WINDOW_MS and time_since_death > 0:
+                # Same victim died recently this round — check if killer also matches
+                last_killer_base = self._strip_team_prefix(self._correct_ocr_name(last_killer))
+                killer_sim = self._name_similarity(killer_base, last_killer_base)
+                if killer_sim > 0.50:
+                    return True
         
         for (sig_t, sig_kt, sig_vt, sig_kn, sig_vn, sig_row) in self.recent_signatures:
             time_diff = t_ms - sig_t
