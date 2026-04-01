@@ -818,8 +818,16 @@ class DatabasePlayerMatcher:
         # Fuzzy match against chosen pool
         best_match = None
         best_score = 0.0
-        # In strict mode (only 10 players), lower threshold to catch more OCR garble
-        fuzzy_threshold = 0.50 if getattr(self, '_strict_roster', False) else 0.70
+        # In strict mode (only 10 players), use 0.67 threshold — high enough to
+        # reject garbage OCR (row mixing, UI artifacts) but low enough that a
+        # cleaner frame in the same killfeed display window will still match.
+        fuzzy_threshold = 0.67 if getattr(self, '_strict_roster', False) else 0.70
+        
+        # Reject OCR artifacts: very short text that consists of a single
+        # repeated character (e.g. 'III', 'lll', '|||') — these come from
+        # weapon icons / UI elements, not player names.
+        if len(name_only) <= 3 and len(set(name_only)) == 1:
+            return None, extracted_team_code
         
         for player_lower, player_info in search_pool.items():
             # Try matching both the full clean text and extracted name

@@ -48,3 +48,6 @@ testing/cv_testing/architecture.md
 crops/
 local_crops*
 extract_log*
+crops_vod*
+vod8*
+vod9*
