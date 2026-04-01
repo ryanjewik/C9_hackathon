@@ -280,7 +280,8 @@ class VODProcessor:
                     print(f"[{job_id}] Auto-detected right team: {detected_right}")
                 
                 # Load player pools from database for detected teams
-                if (self._left_team_code or self._right_team_code) and (not left_player_pool and not right_player_pool):
+                # Skip when strict_roster — user-provided pools must not be overwritten
+                if not strict_roster and (self._left_team_code or self._right_team_code) and (not left_player_pool and not right_player_pool):
                     print(f"[{job_id}] Loading player pools from database for detected teams...")
                     from vod_processor.app.services.db.db_player_matcher import load_match_players_from_db
                     try:
@@ -299,15 +300,21 @@ class VODProcessor:
                         right_player_pool = self._right_player_pool
                     except Exception as e:
                         print(f"[{job_id}] Failed to load player pools from DB: {e}")
+                elif strict_roster:
+                    print(f"[{job_id}] Strict roster: skipping DB player pool loading")
                 
                 # --- Player-name validation: if detected team's player pool
                 #     doesn't overlap with the names from the HUD, try the next
                 #     best candidate tag (handles TL-vs-IL style ambiguity). ---
-                self._validate_team_via_players(
-                    job_id, cap, fps, left_candidates, right_candidates
-                )
-                left_player_pool = self._left_player_pool
-                right_player_pool = self._right_player_pool
+                # Skip when strict_roster — user-provided pools must not be overwritten
+                if not strict_roster:
+                    self._validate_team_via_players(
+                        job_id, cap, fps, left_candidates, right_candidates
+                    )
+                    left_player_pool = self._left_player_pool
+                    right_player_pool = self._right_player_pool
+                else:
+                    print(f"[{job_id}] Strict roster: skipping team-via-players validation")
                 
                 # Reset video position after team detection
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -2408,7 +2415,7 @@ class KillfeedDetector(BaseDetector):
     
     # Per-round dedup: A player can only die ONCE per round in Valorant
     # Track when each victim last died to prevent duplicate detections
-    ROUND_DEDUP_WINDOW_MS = 90000  # 90 seconds - longer than any round duration
+    # (Removed: per-round dedup logic)
     
     def __init__(self, roi_name: str, target_fps: float):
         super().__init__(roi_name, target_fps)
@@ -2429,7 +2436,7 @@ class KillfeedDetector(BaseDetector):
         
         # NEW: Per-round kill tracking to prevent replay/duplicate detection
         # Key: normalized victim name, Value: (last_death_timestamp_ms, killer_name)
-        self._victim_last_death: Dict[str, Tuple[float, str]] = {}
+        # (Removed: per-round dedup and victim death tracking)
         # Track current round start time (set via set_round_start)
         self._current_round_start_ms: float = 0.0
         # Track current round number for halftime detection (starts at 1, not 0)
@@ -2468,11 +2475,14 @@ class KillfeedDetector(BaseDetector):
         self._last_transition_round: int = 0
         
         # REPLAY lookback filter: When REPLAY is detected, invalidate kills from the
-        # previous ~1 second because the replay overlay appears slightly AFTER the
+        # previous ~2 seconds because the replay overlay appears slightly AFTER the
         # killfeed starts showing replay content
-        self._REPLAY_LOOKBACK_MS: float = 1500  # 1.5 seconds lookback
+        self._REPLAY_LOOKBACK_MS: float = 2000  # 2.0 seconds lookback
         self._pending_kills: List[Event] = []  # Buffer kills before confirming them
         self._replay_removed_kills: List[Event] = []  # Kills removed by REPLAY filter
+        
+        # NOTE: Per-round victim death tracking removed — it was rejecting
+        # legitimate kills when OCR timing or replay detection was slightly off.
     
     def on_replay_detected(self, replay_start_ms: float):
         """
@@ -2497,6 +2507,13 @@ class KillfeedDetector(BaseDetector):
         if filtered_count > 0:
             self._replay_removed_kills.extend(removed)
             print(f"[KillfeedDetector] REPLAY lookback filter: removed {filtered_count} kill(s) from t={cutoff_ms/1000:.1f}s to t={replay_start_ms/1000:.1f}s")
+            for k in removed:
+                if k.type == "KILL_EVENT":
+                    p = k.payload
+                    if p.get('is_self_kill'):
+                        print(f"[KILL-REMOVED] t={k.t_ms/1000:.1f}s {p['killer_name']} SELF-KILL (replay filter)")
+                    else:
+                        print(f"[KILL-REMOVED] t={k.t_ms/1000:.1f}s {p['killer_name']} killed {p['victim_name']} (replay filter)")
     
     def set_round_start(self, timestamp_ms: float, round_number: int = 0, left_score: int = 0, right_score: int = 0):
         """
@@ -2526,9 +2543,8 @@ class KillfeedDetector(BaseDetector):
         self._expected_left_score = left_score
         self._expected_right_score = right_score
         
-        # Clear victim death tracking for new round (players respawn)
-        self._victim_last_death.clear()
-        print(f"[KillfeedDetector] Round {round_number} ended, now in round {self._current_round_number} at {timestamp_ms:.0f}ms (score: {left_score}-{right_score}) - cleared death tracking")
+        # (death tracking removed)
+        print(f"[KillfeedDetector] Round {round_number} ended, now in round {self._current_round_number} at {timestamp_ms:.0f}ms (score: {left_score}-{right_score})")
     
     def set_halftime_start(self, timestamp_ms: float):
         """Called when halftime break begins (after round 12 ends).
@@ -2941,6 +2957,8 @@ class KillfeedDetector(BaseDetector):
                     # This is stricter but prevents false positives when we know the player pool
                     continue
 
+            # (Filter 5 removed: per-round victim death tracking was too aggressive)
+
             # Check for duplicates using normalized names
             sig = (t_ms, killer_team, victim_team, killer_name_normalized, victim_name_normalized, actual_row_idx)
             if self._is_duplicate_scroll_aware(t_ms, sig, KILLFEED_DISPLAY_WINDOW_MS):
@@ -2984,16 +3002,6 @@ class KillfeedDetector(BaseDetector):
                 print(f"[KILL] t={t_ms/1000:.1f}s R{display_round} ROW {actual_row_idx+1}: SELF-KILL (fall damage) {killer_name_normalized}")
             else:
                 print(f"[KILL] t={t_ms/1000:.1f}s R{display_round} ROW {actual_row_idx+1}: {killer_name_normalized} killed {victim_name_normalized}")
-
-            # Track this victim's death for per-round deduplication.
-            # Same-team events are revives (e.g. Sage rez) — the victim is now
-            # ALIVE, so clear their death record instead of recording a new death.
-            victim_key = victim_name_normalized.lower().strip() if victim_name_normalized != "Unknown" else None
-            if victim_key:
-                if killer_team and victim_team and killer_team == victim_team:
-                    self._victim_last_death.pop(victim_key, None)
-                else:
-                    self._victim_last_death[victim_key] = (t_ms, killer_name_normalized)
 
             # Defer weapon/ability icon crop  — store for 2 frames to let the
             # row stabilize (animation flash fades, text fully loads).
@@ -3104,22 +3112,7 @@ class KillfeedDetector(BaseDetector):
             import traceback; traceback.print_exc()
             print(f"[CROP-ERR] _extract_weapon_icon failed: {_crop_err}")
 
-        # Check for ult badge
-        if icon_img is not None and self._last_crop_bounds is not None and vtl is not None:
-            weapon_right = self._last_crop_bounds[1]
-            try:
-                badge = self._maybe_extract_ult_badge(row_img, weapon_right, vtl)
-                if badge is not None:
-                    icon_img = badge
-                    self._last_crop_method = "ult_badge"
-                    # Ult-badge revalidation: this kill used an ultimate ability,
-                    # meaning the victim genuinely died.  Reset per-round dedup
-                    # tracking so future kills of the same victim aren't suppressed.
-                    victim_key = pc["victim_name"].lower().strip()
-                    if victim_key in self._victim_last_death:
-                        del self._victim_last_death[victim_key]
-            except Exception:
-                pass
+        # (Removed: ult-badge revalidation logic)
 
         crop_method = getattr(self, '_last_crop_method', None) or "unknown"
 
@@ -3182,83 +3175,17 @@ class KillfeedDetector(BaseDetector):
         4. SWAP CHECK: Names swapped (OCR error) = duplicate
         
         """
-        _, killer_team, victim_team, killer_name, victim_name, row_idx = sig
-        
-        # Same-team events (e.g. Sage revive) are NEVER duplicates.
-        # The victim is being brought back alive — always allow through.
-        if killer_team and victim_team and killer_team == victim_team:
-            return False
-        
-        # Apply OCR correction BEFORE comparison - this normalizes common OCR errors
-        killer_corrected = self._correct_ocr_name(killer_name)
-        victim_corrected = self._correct_ocr_name(victim_name)
-        
-        # Normalize names for comparison (strip team prefixes)
-        killer_base = self._strip_team_prefix(killer_corrected)
-        victim_base = self._strip_team_prefix(victim_corrected)
-        
-        # TIER 0: Per-round victim death tracking (catches replay duplicates 10-30s apart)
-        victim_key = victim_base.lower().strip() if victim_base and victim_base != "Unknown" else None
-        if victim_key and victim_key in self._victim_last_death:
-            last_death_time, last_killer = self._victim_last_death[victim_key]
-            time_since_death = t_ms - last_death_time
-            if time_since_death < self.ROUND_DEDUP_WINDOW_MS and time_since_death > 0:
-                # Same victim died recently this round — check if killer also matches
-                last_killer_base = self._strip_team_prefix(self._correct_ocr_name(last_killer))
-                killer_sim = self._name_similarity(killer_base, last_killer_base)
-                if killer_sim > 0.50:
-                    return True
-        
-        for (sig_t, sig_kt, sig_vt, sig_kn, sig_vn, sig_row) in self.recent_signatures:
+        _, _, _, killer_name, victim_name, _ = sig
+        killer_base = self._strip_team_prefix(self._correct_ocr_name(killer_name))
+        victim_base = self._strip_team_prefix(self._correct_ocr_name(victim_name))
+        for (sig_t, _, _, sig_kn, sig_vn, _) in self.recent_signatures:
             time_diff = t_ms - sig_t
             if time_diff > display_window_ms:
                 continue
-            
-            # Apply OCR correction to stored names too
-            sig_killer_corrected = self._correct_ocr_name(sig_kn)
-            sig_victim_corrected = self._correct_ocr_name(sig_vn)
-            
-            # Strip prefixes from stored names
-            sig_killer_base = self._strip_team_prefix(sig_killer_corrected)
-            sig_victim_base = self._strip_team_prefix(sig_victim_corrected)
-            
-            # EXACT MATCH after OCR correction = definitely duplicate
+            sig_killer_base = self._strip_team_prefix(self._correct_ocr_name(sig_kn))
+            sig_victim_base = self._strip_team_prefix(self._correct_ocr_name(sig_vn))
             if killer_base.lower() == sig_killer_base.lower() and victim_base.lower() == sig_victim_base.lower():
                 return True
-            
-            # Calculate similarities using corrected base names
-            killer_sim = self._name_similarity(killer_base, sig_killer_base)
-            victim_sim = self._name_similarity(victim_base, sig_victim_base)
-            
-            # TIER 1: VICTIM-FOCUSED dedup (strongest - player can only die once per round)
-            # Same victim within 3 seconds = DEFINITELY a duplicate (scrolling or repeated detection)
-            if victim_sim > 0.70 and time_diff < 3000:
-                return True
-            
-            # TIER 1b: Very high victim similarity within longer window (exact name match)
-            if victim_sim > 0.90 and time_diff < display_window_ms:
-                return True
-            
-            # TIER 2: Full match - both killer and victim similar
-            if killer_sim > 0.70 and victim_sim > 0.70:
-                # Don't require strict team match - colors can be misdetected
-                return True
-            
-            # TIER 2b: Moderate similarity on both names within tight window
-            if killer_sim > 0.55 and victim_sim > 0.55 and time_diff < 2500:
-                return True
-            
-            # TIER 3: One name very similar + other moderately similar (OCR variation)
-            if (killer_sim > 0.85 and victim_sim > 0.45 and time_diff < 2500) or \
-               (victim_sim > 0.85 and killer_sim > 0.45 and time_diff < 2500):
-                return True
-            
-            # TIER 4: Check for swapped killer/victim (rare OCR confusion)
-            swap_killer_sim = self._name_similarity(killer_base, sig_victim_base)
-            swap_victim_sim = self._name_similarity(victim_base, sig_killer_base)
-            if swap_killer_sim > 0.70 and swap_victim_sim > 0.70:
-                return True
-                
         return False
 
     def _is_duplicate(self, t_ms: float, sig: Tuple) -> bool:
