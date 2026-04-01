@@ -25,4 +25,6 @@ import org.springframework.stereotype.Repository;
 @Repository
 public interface TeamAdminRepository extends JpaRepository<Team, UUID> {
     Optional<Team> findById(UUID id);
+    java.util.List<Team> findAllByOwnerUserId(UUID ownerUserId);
+    void deleteAllByOwnerUserId(UUID ownerUserId);
 }

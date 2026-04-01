@@ -13,6 +13,13 @@ import org.springframework.stereotype.Service;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.SignatureAlgorithm;
 import io.jsonwebtoken.security.Keys;
+import io.jsonwebtoken.JwtException;
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.io.Decoders;
+import io.jsonwebtoken.security.SignatureException;
+import java.util.Optional;
+
+import io.jsonwebtoken.JwtParser;
 
 @Service
 public class JwtService {
@@ -39,5 +46,20 @@ public class JwtService {
                 .setExpiration(expiry)
                 .signWith(key, SignatureAlgorithm.HS256)
                 .compact();
+    }
+
+    /**
+     * Validate a JWT and return the user id subject if valid.
+     */
+    public Optional<UUID> validateTokenAndGetUserId(String token) {
+        try {
+            JwtParser parser = Jwts.parserBuilder().setSigningKey(key).build();
+            Claims claims = parser.parseClaimsJws(token).getBody();
+            String subj = claims.getSubject();
+            if (subj == null) return Optional.empty();
+            return Optional.of(UUID.fromString(subj));
+        } catch (JwtException | IllegalArgumentException ex) {
+            return Optional.empty();
+        }
     }
 }
