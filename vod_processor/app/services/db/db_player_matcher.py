@@ -172,10 +172,6 @@ class DatabasePlayerMatcher:
                 """, (team_tag, team_tag, team_tag, team_tag, team_tag))
                 return cur.fetchall()
         except Exception as e:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
             print(f"[DBPlayerMatcher] Query error: {e}")
             return []
     
@@ -255,10 +251,6 @@ class DatabasePlayerMatcher:
                 return players
                 
         except Exception as e:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
             print(f"[DBPlayerMatcher] Query error in find_roster_by_date: {e}")
             return []
     
@@ -305,11 +297,6 @@ class DatabasePlayerMatcher:
                       clean_text, f"{clean_text}%", clean_text, limit))
                 return cur.fetchall()
         except psycopg2.Error as e:
-            # Roll back the aborted transaction so subsequent queries work
-            try:
-                conn.rollback()
-            except Exception:
-                pass
             # If similarity function doesn't exist, fall back to LIKE
             if 'function similarity' in str(e).lower():
                 print("[DBPlayerMatcher] pg_trgm not available, using LIKE fallback")
@@ -354,10 +341,6 @@ class DatabasePlayerMatcher:
                 
                 return sorted(results, key=lambda x: x['match_score'], reverse=True)
         except Exception as e:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
             print(f"[DBPlayerMatcher] Fallback query error: {e}")
             return []
     
@@ -543,29 +526,17 @@ class DatabasePlayerMatcher:
         return best_match
     
     def _fuzzy_prefix_match(self, ocr_prefix: str, team_tag: str) -> bool:
-        """Check if OCR prefix matches team tag with error tolerance.
-        
-        Fix 12: handle OCR variants with different lengths (e.g. ENIVY/ENW/NV vs ENVY).
-        Uses SequenceMatcher for short strings with ±1-2 char length tolerance.
-        """
+        """Check if OCR prefix matches team tag with error tolerance."""
         ocr_prefix = ocr_prefix.lower()
         team_tag = team_tag.lower()
         
         if ocr_prefix == team_tag:
             return True
         
-        # Same length: allow 1 character difference
+        # Allow 1 character difference
         if len(ocr_prefix) == len(team_tag):
             diffs = sum(1 for a, b in zip(ocr_prefix, team_tag) if a != b)
             if diffs <= 1:
-                return True
-        
-        # Different lengths (±1 char): OCR may add/drop a character.
-        # Use SequenceMatcher ratio — require high similarity for short tags.
-        len_diff = abs(len(ocr_prefix) - len(team_tag))
-        if len_diff == 1 and 2 <= len(ocr_prefix) <= 7 and 2 <= len(team_tag) <= 7:
-            ratio = SequenceMatcher(None, ocr_prefix, team_tag).ratio()
-            if ratio >= 0.60:
                 return True
         
         return False
@@ -584,20 +555,11 @@ class DatabasePlayerMatcher:
         
         return SequenceMatcher(None, s1_norm, s2_norm).ratio()
     
-    def set_match_players(self, left_names: List[str], right_names: List[str], strict: bool = False):
+    def set_match_players(self, left_names: List[str], right_names: List[str]):
         """
         Manually set match players (bypasses HUD extraction).
-        
-        Args:
-            left_names: Player names for the left team.
-            right_names: Player names for the right team.
-            strict: If True, ONLY use the provided names for matching (no DB roster).
-                   This is ideal when you know the exact 5v5 roster and want to avoid
-                   false matches against historical players.
-        
-        When strict=False (default):
-            Also loads the FULL team roster from database for fuzzy matching.
-            This ensures OCR variants can match against ALL historical players on each team.
+        Also loads the FULL team roster from database for fuzzy matching.
+        This ensures OCR variants can match against ALL historical players on each team.
         
         IMPORTANT: Maintains SEPARATE player pools for each team to handle players
         who have played for both teams (e.g., Crashies was on NRG, now on FNC).
@@ -607,34 +569,8 @@ class DatabasePlayerMatcher:
         self._match_players.clear()
         self._left_team_players.clear()
         self._right_team_players.clear()
-        self._strict_roster = strict
         
-        if strict:
-            # STRICT MODE: Only use the provided names — no DB loading
-            print(f"[DBPlayerMatcher] STRICT roster mode — matching only against provided players")
-            for name in left_names:
-                player = MatchedPlayer(
-                    nickname=name, team_id=None, team_tag=self._left_team_code,
-                    team_name=None, confidence=1.0, source="manual_strict"
-                )
-                self._left_players.append(name)
-                self._left_team_players[name.lower()] = player
-                self._match_players[name.lower()] = player
-            
-            for name in right_names:
-                player = MatchedPlayer(
-                    nickname=name, team_id=None, team_tag=self._right_team_code,
-                    team_name=None, confidence=1.0, source="manual_strict"
-                )
-                self._right_players.append(name)
-                self._right_team_players[name.lower()] = player
-                self._match_players[name.lower()] = player
-            
-            print(f"[DBPlayerMatcher] Set strict players: left={self._left_players}, right={self._right_players}")
-            print(f"[DBPlayerMatcher] Total fuzzy match pool: {len(self._match_players)} players (strict)")
-            return
-        
-        # NON-STRICT MODE: Load full team rosters from database - SEPARATE pools for each team
+        # Load full team rosters from database - SEPARATE pools for each team
         if self._left_team_code:
             db_left_roster = self.find_players_by_team(self._left_team_code)
             for p in db_left_roster:
@@ -780,18 +716,6 @@ class DatabasePlayerMatcher:
                     extracted_team_code = tag_original
                     name_only = clean[len(tag_lower):]
                     break
-                # Fix 12: also try fuzzy prefix for ±1 char OCR variants
-                # e.g. "enivyrossy" with tag "envy" — try lengths len(tag)±1
-                for try_len in [len(tag_lower), len(tag_lower) + 1, len(tag_lower) - 1]:
-                    if try_len < 2 or try_len >= len(clean):
-                        continue
-                    prefix = clean[:try_len]
-                    if self._fuzzy_prefix_match(prefix, tag_lower):
-                        extracted_team_code = tag_original
-                        name_only = clean[try_len:]
-                        break
-                if extracted_team_code:
-                    break
         
         # Determine which team code to use for pool selection
         # PRIORITY: extracted team tag from OCR > passed team_code from color detection
@@ -818,16 +742,6 @@ class DatabasePlayerMatcher:
         # Fuzzy match against chosen pool
         best_match = None
         best_score = 0.0
-        # In strict mode (only 10 players), use 0.67 threshold — high enough to
-        # reject garbage OCR (row mixing, UI artifacts) but low enough that a
-        # cleaner frame in the same killfeed display window will still match.
-        fuzzy_threshold = 0.67 if getattr(self, '_strict_roster', False) else 0.70
-        
-        # Reject OCR artifacts: very short text that consists of a single
-        # repeated character (e.g. 'III', 'lll', '|||') — these come from
-        # weapon icons / UI elements, not player names.
-        if len(name_only) <= 3 and len(set(name_only)) == 1:
-            return None, extracted_team_code
         
         for player_lower, player_info in search_pool.items():
             # Try matching both the full clean text and extracted name
@@ -835,12 +749,9 @@ class DatabasePlayerMatcher:
             score2 = self._ocr_similarity(clean, player_lower) if clean != name_only else 0
             score = max(score1, score2)
             
-            if score > best_score and score > fuzzy_threshold:
+            if score > best_score and score > 0.70:  # Threshold to reduce false matches
                 best_score = score
                 best_match = player_info.nickname
-        
-        if best_match and getattr(self, '_strict_roster', False) and best_score < 0.70:
-            print(f"[DBPlayerMatcher] Strict fuzzy: '{ocr_text}' -> '{best_match}' (score={best_score:.2f})")
         
         return best_match, extracted_team_code
     

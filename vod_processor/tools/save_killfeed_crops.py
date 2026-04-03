@@ -51,7 +51,7 @@ IconClassifier = None
 
 
 def make_debug_image(row_img: np.ndarray) -> np.ndarray:
-    """Create a debug visualization matching the hue-gap contour _extract_weapon_icon algorithm."""
+    """Create a debug visualization matching the hue-transition _extract_weapon_icon algorithm."""
     h, w = row_img.shape[:2]
     hsv = cv2.cvtColor(row_img, cv2.COLOR_BGR2HSV)
 
@@ -104,113 +104,81 @@ def make_debug_image(row_img: np.ndarray) -> np.ndarray:
             best_swing = swing
             best_cross = cr
 
-    # ── Dominance-gradient detection (mirrors _extract_weapon_icon step 4) ──
+    # Walk left from crossing using valid pixel ratio.
+    # Under white text, pixels have S < MIN_SAT → invalid → ratio drops.
+    # After text ends (weapon icon area), ratio is high.
+    valid_ratio = n_valid / max(1.0, float(h))
+    valid_sm = np.convolve(valid_ratio, kernel, mode='same')
+
+    VALID_THRESH = 0.70
+    MIN_ICON_COLS = 3
     left_bound = right_bound = best_cross if best_cross is not None else w // 2
-    weapon_left_col = None
-    weapon_right_col = None
 
     if best_cross is not None:
-        dom_grad = np.abs(np.gradient(dominance))
-        gk = 15
-        g_kernel = np.ones(gk) / gk
-        grad_smooth = np.convolve(dom_grad, g_kernel, mode='same')
-
-        peak_window = 40
-        peak_lo = max(0, best_cross - peak_window)
-        peak_hi = min(len(grad_smooth), best_cross + peak_window)
-        peak_grad = float(grad_smooth[peak_lo:peak_hi].max())
-        GRAD_THRESH = max(peak_grad * 0.04, 0.001)
-        CONSEC_DROP = 6
-        safe_left = int(w * 0.08)
-        safe_right = int(w * 0.92)
-
-        # Walk LEFT from crossing
-        weapon_left_col = safe_left
-        consec = 0
-        for x in range(best_cross - 1, safe_left - 1, -1):
-            if grad_smooth[x] < GRAD_THRESH:
-                consec += 1
-                if consec >= CONSEC_DROP:
-                    weapon_left_col = x + CONSEC_DROP
-                    break
-            else:
-                consec = 0
-
-        # Walk RIGHT from crossing
-        weapon_right_col = safe_right
-        consec = 0
-        for x in range(best_cross + 1, safe_right + 1):
-            if grad_smooth[x] < GRAD_THRESH:
-                consec += 1
-                if consec >= CONSEC_DROP:
-                    weapon_right_col = x - CONSEC_DROP
-                    break
-            else:
-                consec = 0
-
-        # Extend gradient zone using proportional extension
-        grad_gap = weapon_right_col - weapon_left_col
-        extend_left = max(30, int(grad_gap * 1.0))
-        extend_right = max(25, int(grad_gap * 0.8))
-        ext_left = max(safe_left, weapon_left_col - extend_left)
-        ext_right = min(safe_right, weapon_right_col + extend_right)
-
-        left_bound = ext_left
-        right_bound = ext_right
+        right_bound = best_cross
+        left_bound = max(0, best_cross - 100)  # fallback: typical icon zone
+        icon_cols = 0
+        for x in range(best_cross - 1, max(0, int(w * 0.08)) - 1, -1):
+            if valid_sm[x] >= VALID_THRESH:
+                icon_cols += 1
+            if icon_cols >= MIN_ICON_COLS and valid_sm[x] < VALID_THRESH:
+                left_bound = x
+                break
 
         crop_w = right_bound - left_bound
-        MIN_CROP = 50
-        MAX_CROP = int(w * 0.28)
+        MIN_CROP = 80
+        MAX_CROP = int(w * 0.40)
         if crop_w < MIN_CROP:
-            mid = best_cross
-            left_bound = max(0, mid - MIN_CROP // 2)
-            right_bound = min(w, left_bound + MIN_CROP)
+            left_bound = max(0, right_bound - MIN_CROP)
         elif crop_w > MAX_CROP:
-            mid = (left_bound + right_bound) // 2
-            left_bound = max(0, mid - MAX_CROP // 2)
-            right_bound = min(w, left_bound + MAX_CROP)
-
-        pad = max(6, int((right_bound - left_bound) * 0.10))
-        left_bound = max(0, left_bound - pad)
-        right_bound = min(w, right_bound + pad)
+            left_bound = max(0, right_bound - MAX_CROP)
 
     # ── Build debug canvas: [original+overlay] [dominance chart] [hue map] ──
     # Row 1: original with crop overlay
     overlay = row_img.copy()
     if best_cross is not None:
+        # Draw crop region in red
         cv2.rectangle(overlay, (left_bound, 0), (right_bound, h), (0, 0, 255), 2)
+        # Mark crossing with yellow vertical line
         cv2.line(overlay, (best_cross, 0), (best_cross, h), (0, 255, 255), 1)
-        cv2.putText(overlay, "EDGE", (left_bound + 2, h - 4),
+        cv2.putText(overlay, "ICON", (left_bound + 2, h - 4),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 255), 1)
     else:
         cv2.putText(overlay, "NO CROSSING", (w // 2 - 30, h // 2),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 255), 1)
 
-    # Row 2: dominance signal chart
+    # Row 2: dominance signal chart + valid_ratio overlay
     chart_h = max(40, h)
     chart = np.zeros((chart_h, w, 3), dtype=np.uint8)
+    # Zero line (middle)
     mid_y = chart_h // 2
     cv2.line(chart, (0, mid_y), (w - 1, mid_y), (80, 80, 80), 1)
+    # Draw dominance curve: orange above zero = blue, teal below zero = cyan
     max_abs = max(np.abs(dominance).max(), 0.01)
     for x in range(w - 1):
         y1 = int(mid_y - (dominance[x] / max_abs) * (mid_y - 2))
         y2 = int(mid_y - (dominance[x + 1] / max_abs) * (mid_y - 2))
         color = (0, 128, 255) if dominance[x] > 0 else (255, 200, 0)
         cv2.line(chart, (x, y1), (x + 1, y2), color, 1)
+    # Draw valid_ratio as green curve (0=bottom, 1=top)
+    for x in range(w - 1):
+        vy1 = int((1.0 - valid_sm[x]) * (chart_h - 1))
+        vy2 = int((1.0 - valid_sm[x + 1]) * (chart_h - 1))
+        cv2.line(chart, (x, vy1), (x + 1, vy2), (0, 200, 0), 1)
+    # Draw VALID_THRESH line
+    vth_y = int((1.0 - VALID_THRESH) * (chart_h - 1))
+    cv2.line(chart, (0, vth_y), (w - 1, vth_y), (0, 100, 0), 1)
+    # Mark crossings
     for cr in crossings:
         cv2.line(chart, (cr, 0), (cr, chart_h - 1), (0, 255, 255), 1)
     if best_cross is not None:
         cv2.rectangle(chart, (left_bound, 0), (right_bound, chart_h - 1), (0, 0, 255), 1)
 
-    # Row 3: hue classification map with edge boundary markers
+    # Row 3: hue classification map
     hue_map = np.zeros((h, w, 3), dtype=np.uint8)
+    # Orange pixels → blue-ish, teal pixels → cyan
     hue_map[orange_px.astype(bool)] = (0, 128, 255)  # BGR: orange
     hue_map[teal_px.astype(bool)] = (255, 200, 0)    # BGR: cyan/teal
-    # Draw detected edge boundaries as green vertical lines
-    if weapon_left_col is not None:
-        cv2.line(hue_map, (weapon_left_col, 0), (weapon_left_col, h), (0, 255, 0), 1)
-    if weapon_right_col is not None:
-        cv2.line(hue_map, (weapon_right_col, 0), (weapon_right_col, h), (0, 255, 0), 1)
 
     # Resize all to same height
     target_h = max(h, 40)
@@ -406,16 +374,8 @@ def main():
                 dbg_path = debug_dir / f"frame{frame_idx:06d}_t{ts}ms_row{actual_row_idx}_debug.png"
                 cv2.imwrite(str(dbg_path), dbg_img)
 
-            # Extract icon — use OCR text boundaries when available
-            entry = None
-            try:
-                entry = detector._parse_row(row_img)
-            except Exception:
-                pass
-
-            ktr = entry.get("killer_text_right") if entry else None
-            vtl = entry.get("victim_text_left") if entry else None
-            icon = detector._extract_weapon_icon(row_img, killer_text_right=ktr, victim_text_left=vtl)
+            # Extract icon
+            icon = detector._extract_weapon_icon(row_img)
             icon_label = "unknown"
             if icon is not None:
                 icon_filename = f"frame{frame_idx:06d}_t{ts}ms_row{actual_row_idx}_icon.png"

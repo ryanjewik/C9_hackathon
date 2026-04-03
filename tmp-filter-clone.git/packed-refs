@@ -1,0 +1,9 @@
+# pack-refs with: peeled fully-peeled sorted 
+6dc6f9fa27c027d95b69e01661e5ac985583fd8b refs/heads/backup/fix-email-ryan_desktop-20260402201034
+af181e15d22ff294a30d0550125c931d3c985ad2 refs/heads/backup/ryan_desktop_before_emailfix
+bb514e5a766af05f4997d493db5b412c9ddaf141 refs/heads/main
+6dc6f9fa27c027d95b69e01661e5ac985583fd8b refs/heads/ryan_desktop
+6dc6f9fa27c027d95b69e01661e5ac985583fd8b refs/heads/ryan_desktop_fixed
+bb514e5a766af05f4997d493db5b412c9ddaf141 refs/heads/ryan_desktop_rebuild
+c620ab507c95c58b7424e82b420a7a019a539d39 refs/heads/ryan_laptop
+346856fc298c1502b2e71103bdf73604875ef80b refs/stash

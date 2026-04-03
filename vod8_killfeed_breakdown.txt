@@ -1,0 +1,439 @@
+VOD 8 — Round-by-Round Kill Breakdown (2s Replay Filter)
+NV (left): keznit, Rossy, P0PPIN, Eggsterr, Inspire
+C9 (right): penny, Demon1, Zellsis, v1c, Xeppaa
+Replay kills removed: 14
+============================================================
+
+Round 1  (score after: 0-1, won by C9)
+----------------------------------------
+  Demon1 -> Eggsterr
+  Demon1 -> P0PPIN
+  Rossy -> Demon1
+  Xeppaa -> keznit
+  Rossy -> Xeppaa
+  penny -> Rossy
+  Inspire SELF-KILL (fall damage)
+  (7 kills)
+
+Round 2  (score after: 0-2, won by C9)
+----------------------------------------
+  keznit -> v1c
+  penny -> keznit
+  Demon1 -> Eggsterr
+  penny -> Inspire
+  Demon1 -> Rossy
+  Xeppaa -> P0PPIN
+  (6 kills)
+
+Round 3  (score after: 0-3, won by C9)
+----------------------------------------
+  penny -> Inspire
+  Demon1 -> keznit
+  Demon1 -> P0PPIN
+  Demon1 -> Eggsterr
+  penny -> Rossy
+  (5 kills)
+
+Round 4  (score after: 0-4, won by C9)
+----------------------------------------
+  P0PPIN -> penny
+  v1c -> P0PPIN
+  Xeppaa -> Eggsterr
+  Xeppaa -> keznit
+  Demon1 -> Rossy
+  Demon1 -> Inspire
+  (6 kills)
+
+Round 5  (score after: 0-5, won by C9)
+----------------------------------------
+  penny -> keznit
+  penny -> Rossy
+  P0PPIN -> Demon1
+  penny -> P0PPIN
+  (4 kills)
+
+Round 6  (score after: 1-5, won by NV)
+----------------------------------------
+  Demon1 -> P0PPIN
+  Eggsterr -> penny
+  keznit -> Zellsis
+  v1c -> keznit
+  Eggsterr -> Demon1
+  Xeppaa -> Eggsterr
+  Inspire -> v1c
+  Inspire -> Xeppaa
+  (8 kills)
+
+Round 7  (score after: 2-5, won by NV)
+----------------------------------------
+  Demon1 -> Inspire
+  P0PPIN -> Demon1
+  Rossy -> penny
+  v1c -> keznit
+  Rossy -> v1c
+  Rossy -> Zellsis
+  Rossy -> Xeppaa
+  (7 kills)
+
+Round 8  (score after: 3-5, won by NV)
+----------------------------------------
+  keznit -> penny
+  P0PPIN -> Zellsis
+  P0PPIN -> Demon1
+  keznit -> Xeppaa
+  Inspire -> v1c
+  (5 kills)
+
+Round 9  (score after: 4-5, won by NV)
+----------------------------------------
+  keznit -> Xeppaa
+  Inspire -> Demon1
+  v1c -> Rossy
+  keznit -> penny
+  Zellsis -> keznit
+  v1c -> Eggsterr
+  Inspire -> Zellsis
+  P0PPIN -> v1c
+  (8 kills)
+
+Round 10  (score after: 5-5, won by NV)
+----------------------------------------
+  Eggsterr -> Demon1
+  Rossy -> penny
+  P0PPIN -> v1c
+  P0PPIN -> Zellsis
+  keznit -> Xeppaa
+  (5 kills)
+
+Round 11  (score after: 6-5, won by NV)
+----------------------------------------
+  Inspire -> Zellsis
+  P0PPIN -> penny
+  Demon1 -> Zellsis
+  P0PPIN -> v1c
+  Inspire -> Zellsis
+  P0PPIN -> Demon1
+  Xeppaa -> Inspire
+  Eggsterr -> Xeppaa
+  (8 kills)
+
+Round 12  (score after: 7-5, won by NV)
+----------------------------------------
+  penny -> Eggsterr
+  Rossy -> penny
+  Rossy -> Xeppaa
+  Demon1 -> Rossy
+  keznit -> v1c
+  keznit -> Zellsis
+  keznit -> Demon1
+  (7 kills)
+
+Round 13  (score after: 8-5, won by NV)
+----------------------------------------
+  Rossy -> Xeppaa
+  Zellsis -> P0PPIN
+  penny -> keznit
+  penny -> Inspire
+  Rossy -> Zellsis
+  Rossy -> penny
+  Eggsterr -> v1c
+  Demon1 -> Rossy
+  Demon1 -> Eggsterr
+  Demon1 SELF-KILL (fall damage)
+  (10 kills)
+
+Round 14  (score after: 9-5, won by NV)
+----------------------------------------
+  v1c -> Eggsterr
+  keznit -> Zellsis
+  Rossy -> Xeppaa
+  P0PPIN -> Demon1
+  keznit -> penny
+  P0PPIN -> v1c
+  (6 kills)
+
+Round 15  (score after: 10-5, won by NV)
+----------------------------------------
+  penny -> keznit
+  Eggsterr -> penny
+  Eggsterr -> v1c
+  Zellsis -> Eggsterr
+  P0PPIN -> Demon1
+  P0PPIN -> Zellsis
+  P0PPIN -> Xeppaa
+  (7 kills)
+
+Round 16  (score after: 11-5, won by NV)
+----------------------------------------
+  P0PPIN -> Zellsis
+  Demon1 -> Inspire
+  P0PPIN -> penny
+  Eggsterr -> Xeppaa
+  Demon1 -> P0PPIN
+  keznit -> Demon1
+  keznit -> v1c
+  (7 kills)
+
+Round 17  (score after: 11-6, won by C9)
+----------------------------------------
+  Demon1 -> Inspire
+  penny -> Rossy
+  P0PPIN -> penny
+  Eggsterr -> Demon1
+  Zellsis -> P0PPIN
+  Eggsterr -> Xeppaa
+  Zellsis -> keznit
+  Zellsis -> Eggsterr
+  (8 kills)
+
+Round 18  (score after: 11-7, won by C9)
+----------------------------------------
+  Eggsterr -> penny
+  v1c -> Eggsterr
+  Demon1 -> P0PPIN
+  keznit -> Demon1
+  v1c -> keznit
+  Inspire -> v1c
+  Inspire -> Zellsis
+  Inspire -> Xeppaa
+  (8 kills)
+
+Round 19  (score after: 11-8, won by C9)
+----------------------------------------
+  v1c -> keznit
+  v1c -> Eggsterr
+  Inspire -> v1c
+  Demon1 -> Rossy
+  Demon1 -> P0PPIN
+  Zellsis -> Inspire
+  (6 kills)
+
+Round 20  (score after: 11-9, won by C9)
+----------------------------------------
+  P0PPIN -> Zellsis
+  Xeppaa -> keznit
+  penny -> P0PPIN
+  penny -> Eggsterr
+  penny -> Inspire
+  Rossy -> penny
+  v1c -> Rossy
+  (7 kills)
+
+Round 21  (score after: 11-10, won by C9)
+----------------------------------------
+  penny -> Eggsterr
+  penny -> Rossy
+  Zellsis -> keznit
+  Zellsis -> Inspire
+  penny -> P0PPIN
+  (5 kills)
+
+Round 22  (score after: 12-10, won by NV)
+----------------------------------------
+  P0PPIN -> penny
+  Demon1 -> Inspire
+  keznit -> Xeppaa
+  Eggsterr -> Demon1
+  keznit -> Zellsis
+  v1c -> keznit
+  Eggsterr -> v1c
+  (7 kills)
+
+Round 23  (score after: 12-11, won by C9)
+----------------------------------------
+  Demon1 -> P0PPIN
+  Demon1 -> Eggsterr
+  Demon1 -> Rossy
+  Demon1 -> keznit
+  Demon1 -> Inspire
+  (5 kills)
+
+Round 24  (score after: 12-12, won by C9)
+----------------------------------------
+  Xeppaa -> keznit
+  penny -> P0PPIN
+  Rossy -> penny
+  Eggsterr -> Demon1
+  Inspire -> Zellsis
+  Xeppaa -> Inspire
+  Eggsterr -> Xeppaa
+  v1c -> Rossy
+  v1c -> Eggsterr
+  (9 kills)
+
+Round 25  (score after: 13-12, won by NV)
+----------------------------------------
+  Inspire -> Demon1
+  P0PPIN -> penny
+  Xeppaa -> Eggsterr
+  Xeppaa -> keznit
+  Inspire -> v1c
+  Inspire -> Zellsis
+  Xeppaa -> P0PPIN
+  Rossy -> Xeppaa
+  Xeppaa -> Inspire
+  (9 kills)
+
+Round 26  (score after: 13-13, won by C9)
+----------------------------------------
+  penny -> P0PPIN
+  keznit -> penny
+  v1c -> keznit
+  Eggsterr -> v1c
+  Demon1 -> Rossy
+  Xeppaa -> Eggsterr
+  Xeppaa -> Inspire
+  (7 kills)
+
+Round 27  (score after: 14-13, won by NV)
+----------------------------------------
+  P0PPIN -> Zellsis
+  Xeppaa -> P0PPIN
+  Inspire -> penny
+  Demon1 -> Eggsterr
+  Rossy -> Demon1
+  v1c -> Rossy
+  Inspire -> v1c
+  Inspire -> Xeppaa
+  (8 kills)
+
+Round 28  (score after: 14-14, won by C9)
+----------------------------------------
+  v1c -> Eggsterr
+  Zellsis -> keznit
+  keznit -> v1c
+  Zellsis -> Rossy
+  Xeppaa -> Inspire
+  penny -> P0PPIN
+  (6 kills)
+
+Round 29  (score after: 15-14, won by NV)
+----------------------------------------
+  Inspire -> penny
+  keznit -> v1c
+  Eggsterr -> Xeppaa
+  keznit -> Demon1
+  Eggsterr -> Zellsis
+  (5 kills)
+
+Round 30  (score after: 15-15, won by C9)
+----------------------------------------
+  Demon1 -> Inspire
+  penny -> keznit
+  P0PPIN -> v1c
+  Xeppaa -> Eggsterr
+  Zellsis -> P0PPIN
+  Rossy -> penny
+  Demon1 -> Rossy
+  (7 kills)
+
+Round 31  (score after: 15-16, won by C9)
+----------------------------------------
+  Inspire -> Xeppaa
+  Inspire -> v1c
+  penny -> Inspire
+  penny -> keznit
+  P0PPIN -> Zellsis
+  penny -> Eggsterr
+  penny -> P0PPIN
+  Demon1 -> Rossy
+  (8 kills)
+
+Round 32  (score after: 16-16, won by NV)
+----------------------------------------
+  penny -> Eggsterr
+  keznit -> Zellsis
+  keznit -> penny
+  P0PPIN -> v1c
+  keznit -> Xeppaa
+  Demon1 -> P0PPIN
+  Rossy -> Demon1
+  (7 kills)
+
+Round 33  (score after: 16-17, won by C9)
+----------------------------------------
+  P0PPIN -> penny
+  Inspire -> Zellsis
+  Xeppaa -> Inspire
+  keznit -> Xeppaa
+  v1c -> Rossy
+  keznit -> Demon1
+  v1c -> keznit
+  v1c -> Eggsterr
+  v1c -> P0PPIN
+  (9 kills)
+
+Round 34  (score after: 17-17, won by NV)
+----------------------------------------
+  Eggsterr -> Zellsis
+  penny -> Eggsterr
+  Inspire -> Xeppaa
+  Inspire -> penny
+  v1c -> P0PPIN
+  Rossy -> Demon1
+  Rossy -> v1c
+  (7 kills)
+
+Round 35  (score after: 17-18, won by C9)
+----------------------------------------
+  Demon1 -> Rossy
+  keznit -> Zellsis
+  Demon1 -> keznit
+  Demon1 -> P0PPIN
+  Inspire -> penny
+  Eggsterr -> Demon1
+  Inspire -> v1c
+  Xeppaa -> Eggsterr
+  Xeppaa -> Inspire
+  (9 kills)
+
+Round 36  (score after: 18-18, won by NV)
+----------------------------------------
+  Demon1 -> keznit
+  Eggsterr -> penny
+  Demon1 -> Eggsterr
+  Inspire -> Demon1
+  P0PPIN -> Zellsis
+  Xeppaa -> P0PPIN
+  Inspire -> Xeppaa
+  Rossy -> v1c
+  (8 kills)
+
+Round 37  (score after: 18-19, won by C9)
+----------------------------------------
+  P0PPIN -> Demon1
+  P0PPIN -> penny
+  v1c -> Eggsterr
+  v1c -> Rossy
+  Xeppaa -> P0PPIN
+  Zellsis -> Inspire
+  Xeppaa -> keznit
+  (7 kills)
+
+Round 38  (score after: 0-0, won by ?)
+----------------------------------------
+  Xeppaa -> Eggsterr
+  Rossy -> Demon1
+  P0PPIN -> Xeppaa
+  penny -> keznit
+  penny -> P0PPIN
+  v1c -> Rossy
+  v1c -> Inspire
+  (7 kills)
+
+============================================================
+PLAYER KILL TOTALS
+----------------------------------------
+  Demon1 (C9): 38
+  penny (C9): 31
+  P0PPIN (NV): 31
+  Inspire (NV): 28
+  keznit (NV): 27
+  v1c (C9): 26
+  Xeppaa (C9): 25
+  Rossy (NV): 23
+  Eggsterr (NV): 21
+  Zellsis (C9): 13
+  Total: 263
+  Self-kills: 2
+  Replay-filtered: 14
