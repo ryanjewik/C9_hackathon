@@ -23,7 +23,6 @@ import com.example.identity_service.entity.TeamMember;
 import com.example.identity_service.dto.TeamMemberRoleDto;
 import com.example.identity_service.dto.ApiKeyCreateDto;
 import com.example.identity_service.dto.ApiKeyResponseDto;
-import com.example.identity_service.service.ApiKeyPlainCache;
 import com.example.identity_service.entity.Invitation;
 import com.example.identity_service.entity.TeamMember;
 
@@ -205,15 +204,17 @@ public class TeamAdminController {
         if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
         UUID requester;
         try { requester = UUID.fromString(jwt.getSubject()); } catch (Exception ex) { return ResponseEntity.status(401).body(Map.of("error","invalid_token_subject")); }
-        Optional<com.example.identity_service.entity.ApiKey> akOpt = teamAdminService.createApiKey(teamId, dto.getName(), requester);
-        if (akOpt.isEmpty()) return ResponseEntity.status(403).body(Map.of("error","not_authorized_or_failed"));
-        com.example.identity_service.entity.ApiKey saved = akOpt.get();
-        String plaintext = ApiKeyPlainCache.take(saved.getId());
+        var resultOpt = teamAdminService.createApiKey(teamId, dto.getName(), requester);
+        if (resultOpt.isEmpty()) return ResponseEntity.status(403).body(Map.of("error","not_authorized_or_failed"));
+        var result = resultOpt.get();
+        com.example.identity_service.entity.ApiKey saved = result.getApiKey();
+        String plaintext = result.getPlaintext();
         ApiKeyResponseDto resp = new ApiKeyResponseDto();
         resp.setId(saved.getId());
         resp.setName(saved.getName());
         resp.setKeyPrefix(saved.getKeyPrefix());
         resp.setCreatedAt(saved.getCreatedAt());
+        // return plaintext exactly once in this response; do NOT store or log it
         resp.setKey(plaintext);
         return ResponseEntity.status(201).body(resp);
     }

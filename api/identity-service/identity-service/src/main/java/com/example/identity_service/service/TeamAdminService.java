@@ -116,7 +116,7 @@ public class TeamAdminService {
     }
 
     @Transactional
-    public Optional<com.example.identity_service.entity.ApiKey> createApiKey(UUID teamId, String name, UUID requesterId) {
+    public Optional<ApiKeyCreationResult> createApiKey(UUID teamId, String name, UUID requesterId) {
         if (teamId == null || requesterId == null || name == null || name.isBlank()) return Optional.empty();
         Optional<Team> tOpt = teamAdminRepository.findById(teamId);
         if (tOpt.isEmpty()) return Optional.empty();
@@ -136,7 +136,7 @@ public class TeamAdminService {
             java.security.SecureRandom.getInstanceStrong().nextBytes(rnd);
             String fullKey = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(rnd);
             String keyPrefix = fullKey.substring(0, Math.min(8, fullKey.length()));
-            // store hash of key
+            // store hash of key (one-way) - keep existing SHA-256 behavior for minimal change
             java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
             byte[] digest = md.digest(fullKey.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             StringBuilder sb = new StringBuilder();
@@ -145,13 +145,10 @@ public class TeamAdminService {
 
             com.example.identity_service.entity.ApiKey ak = new com.example.identity_service.entity.ApiKey(teamId, name, keyPrefix, keyHash);
             com.example.identity_service.entity.ApiKey saved = apiKeyRepository.save(ak);
-            // return saved entity along with the plaintext key in the caller's flow
-            // We cannot attach the plaintext to the entity stored; caller should receive it separately.
-            // To pass it back, we'll set a transient field is not present; instead return the saved entity and caller will reconstruct response using fullKey.
-            // We'll return the entity and the caller (controller) will produce ApiKeyResponseDto with fullKey.
-            // For now, store fullKey in a ThreadLocal map so controller can retrieve it immediately after creation.
-            ApiKeyPlainCache.store(saved.getId(), fullKey);
-            return Optional.of(saved);
+            // Return the saved entity plus the plaintext key directly to the caller.
+            // Do NOT persist or cache the plaintext anywhere.
+            ApiKeyCreationResult result = new ApiKeyCreationResult(saved, fullKey);
+            return Optional.of(result);
         } catch (Exception ex) {
             return Optional.empty();
         }

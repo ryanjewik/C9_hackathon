@@ -2,7 +2,6 @@ package com.example.identity_service.controller;
 
 import com.example.identity_service.dto.LoginDto;
 import com.example.identity_service.dto.RegisterDto;
-import com.example.identity_service.dto.ApikeyDto;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -57,12 +56,4 @@ public class AuthController {
             "token_type", "Bearer"
         ));
     }
-
-    // @PostMapping("apikey")
-    // public ResponseEntity<?> apikey(@RequestBody ApikeyDto body){
-    //     return ResponseEntity.status(201).body(Map.of(
-    //         "api_key", "blank"
-    //     ));
-    // }
-    
 }
