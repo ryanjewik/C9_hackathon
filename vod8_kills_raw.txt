@@ -1,0 +1,302 @@
+﻿[KILL] t=30.9s R1 ROW 1: Demon1 killed Eggsterr
+[KILL] t=34.6s R1 ROW 2: Demon1 killed P0PPIN
+[KILL] t=35.8s R1 ROW 3: Rossy killed Demon1
+[KILL] t=36.9s R1 ROW 3: Xeppaa killed keznit
+[KILL] t=43.7s R1 ROW 1: Rossy killed Xeppaa
+[KILL] t=48.2s R1 ROW 1: penny killed Rossy
+[ROUND] Score: 0-0 -> 0-1 at t=96.1s (conf: L=1.00, R=1.00)
+[KILL] t=96.5s R1 ROW 1: Inspire SELF-KILL (fall damage)
+[KILL] t=106.3s R2 ROW 1: Demon1 killed Eggsterr
+[KILL] t=192.1s R2 ROW 1: keznit killed v1c
+[KILL] t=199.6s R2 ROW 1: penny killed keznit
+[KILL] t=208.7s R2 ROW 1: Demon1 killed Eggsterr
+[KILL] t=209.1s R2 ROW 2: penny killed Inspire
+[ROUND] Score: 0-1 -> 0-2 at t=210.1s (conf: L=1.00, R=1.00)
+[KILL] t=212.1s R2 ROW 4: Xeppaa killed P0PPIN
+[KILL] t=268.2s R3 ROW 1: penny killed Inspire
+[KILL] t=285.6s R3 ROW 1: Demon1 killed keznit
+[KILL] t=288.1s R3 ROW 2: Demon1 killed P0PPIN
+[KILL] t=288.2s R3 ROW 3: Demon1 killed Eggsterr
+[ROUND] Score: 0-2 -> 0-3 at t=290.4s (conf: L=1.00, R=1.00)
+[KILL] t=290.5s R3 ROW 4: penny killed Rossy
+[KILL] t=349.8s R4 ROW 1: P0PPIN killed penny
+[KILL] t=350.8s R4 ROW 2: v1c killed P0PPIN
+[KILL] t=369.1s R4 ROW 1: Xeppaa killed Eggsterr
+[KILL] t=387.4s R4 ROW 1: Xeppaa killed keznit
+[KILL] t=426.8s R4 ROW 1: Demon1 killed Inspire
+[ROUND] Score: 0-3 -> 0-4 at t=427.1s (conf: L=1.00, R=1.00)
+[KILL] t=440.3s R5 ROW 1: P0PPIN killed penny
+[KILL] t=540.7s R5 ROW 1: penny killed keznit
+[KILL] t=542.0s R5 ROW 2: penny killed Rossy
+[KILL] t=543.6s R5 ROW 3: P0PPIN killed Demon1
+[KILL] t=543.8s R5 ROW 4: penny killed P0PPIN
+[ROUND] Score: 0-4 -> 0-5 at t=601.3s (conf: L=1.00, R=1.00)
+[KILL] t=652.6s R6 ROW 1: Demon1 killed P0PPIN
+[KILL] t=669.3s R6 ROW 1: Eggsterr killed penny
+[KILL] t=685.6s R6 ROW 1: keznit killed Zellsis
+[KILL] t=686.3s R6 ROW 2: v1c killed keznit
+[KILL] t=686.5s R6 ROW 3: Eggsterr killed Demon1
+[KILL] t=693.6s R6 ROW 1: Xeppaa killed Eggsterr
+[KILL] t=718.1s R6 ROW 1: Inspire killed v1c
+[KILL] t=720.8s R6 ROW 2: Inspire killed Xeppaa
+[ROUND] Score: 0-5 -> 1-5 at t=752.4s (conf: L=1.00, R=1.00)
+[KILL] t=847.5s R7 ROW 1: Demon1 killed Inspire
+[KILL] t=851.1s R7 ROW 4: v1c killed keznit
+[KILL] t=851.6s R7 ROW 3: Rossy killed penny
+[KILL] t=853.1s R7 ROW 1: P0PPIN killed Demon1
+[KILL] t=853.4s R7 ROW 4: Rossy killed v1c
+[KILL] t=854.9s R7 ROW 4: Rossy killed Zellsis
+[ROUND] Score: 1-5 -> 2-5 at t=856.0s (conf: L=1.00, R=1.00)
+[KILL] t=871.7s R8 ROW 1: Demon1 killed Inspire
+[KILL] t=983.0s R8 ROW 1: keznit killed penny
+[KILL] t=986.1s R8 ROW 2: P0PPIN killed Zellsis
+[KILL] t=1041.5s R8 ROW 1: P0PPIN killed Demon1
+[ROUND] Score: 2-5 -> 3-5 at t=1045.0s (conf: L=1.00, R=1.00)
+[KILL] t=1045.3s R8 ROW 3: Inspire killed v1c
+[KILL] t=1045.7s R8 ROW 2: keznit killed Xeppaa
+[KILL] t=1145.3s R9 ROW 1: keznit killed Xeppaa
+[KILL] t=1146.1s R9 ROW 2: Inspire killed Demon1
+[KILL] t=1146.6s R9 ROW 3: v1c killed Rossy
+[KILL] t=1167.9s R9 ROW 1: keznit killed penny
+[KILL] t=1168.8s R9 ROW 2: Zellsis killed keznit
+[KILL] t=1169.2s R9 ROW 3: v1c killed Eggsterr
+[ROUND] Score: 3-5 -> 4-5 at t=1169.2s (conf: L=1.00, R=1.00)
+[KILL] t=1169.8s R9 ROW 4: Inspire killed Zellsis
+[KILL] t=1171.6s R9 ROW 5: P0PPIN killed v1c
+[KILL] t=1228.2s R10 ROW 1: Eggsterr killed Demon1
+[KILL] t=1251.7s R10 ROW 2: P0PPIN killed v1c
+[KILL] t=1252.1s R10 ROW 3: P0PPIN killed Zellsis
+[ROUND] Score: 4-5 -> 5-5 at t=1257.6s (conf: L=1.00, R=1.00)
+[KILL] t=1257.7s R10 ROW 1: keznit killed Xeppaa
+[KILL] t=1309.4s R11 ROW 1: Inspire killed Zellsis
+[KILL] t=1313.5s R11 ROW 2: P0PPIN killed penny
+[KILL] t=1315.4s R11 ROW 2: Demon1 killed Zellsis
+[KILL] t=1315.7s R11 ROW 3: P0PPIN killed v1c
+[KILL] t=1320.9s R11 ROW 2: Inspire killed Zellsis
+[KILL] t=1321.6s R11 ROW 2: P0PPIN killed Demon1
+[KILL] t=1322.1s R11 ROW 3: Xeppaa killed Inspire
+[ROUND] Score: 5-5 -> 6-5 at t=1322.5s (conf: L=1.00, R=1.00)
+[KILL] t=1415.7s R12 ROW 1: penny killed Eggsterr
+[KILL] t=1417.0s R12 ROW 2: Rossy killed penny
+[KILL] t=1419.1s R12 ROW 4: Demon1 killed Rossy
+[KILL] t=1425.8s R12 ROW 1: keznit killed v1c
+[KILL] t=1427.8s R12 ROW 2: keznit killed Zellsis
+[ROUND] Score: 6-5 -> 7-5 at t=1431.3s (conf: L=1.00, R=1.00)
+[KILL] t=1431.9s R12 ROW 2: keznit killed Demon1
+[KILL] t=1626.3s R13 ROW 2: Zellsis killed P0PPIN
+[KILL] t=1628.5s R13 ROW 3: penny killed keznit
+[KILL] t=1637.6s R13 ROW 1: penny killed Inspire
+[KILL] t=1674.8s R13 ROW 1: Eggsterr killed v1c
+[KILL] t=1683.7s R13 ROW 1: Demon1 killed Rossy
+[KILL] t=1692.0s R13 ROW 1: Demon1 killed Eggsterr
+[ROUND] Score: 7-5 -> 8-5 at t=1694.8s (conf: L=1.00, R=1.00)
+[KILL] t=1695.1s R13 ROW 2: Demon1 SELF-KILL (fall damage)
+[KILL] t=1740.5s R14 ROW 1: v1c killed Eggsterr
+[KILL] t=1784.0s R14 ROW 1: keznit killed Zellsis
+[KILL] t=1786.9s R14 ROW 2: Rossy killed Xeppaa
+[KILL] t=1787.1s R14 ROW 3: P0PPIN killed Demon1
+[KILL] t=1792.5s R14 ROW 2: keznit killed penny
+[ROUND] Score: 8-5 -> 9-5 at t=1796.1s (conf: L=1.00, R=1.00)
+[KILL] t=1796.7s R14 ROW 2: P0PPIN killed v1c
+[KILL] t=1839.2s R15 ROW 1: penny killed keznit
+[KILL] t=1842.9s R15 ROW 2: Eggsterr killed penny
+[KILL] t=1851.4s R15 ROW 1: Eggsterr killed v1c
+[KILL] t=1871.3s R15 ROW 1: Zellsis killed Eggsterr
+[KILL] t=1876.8s R15 ROW 1: P0PPIN killed Demon1
+[KILL] t=1878.4s R15 ROW 2: P0PPIN killed Zellsis
+[KILL] t=1880.6s R15 ROW 3: P0PPIN killed Xeppaa
+[ROUND] Score: 9-5 -> 10-5 at t=1880.7s (conf: L=1.00, R=1.00)
+[KILL] t=1892.0s R16 ROW 1: penny killed keznit
+[KILL] t=1995.2s R16 ROW 1: P0PPIN killed Zellsis
+[KILL] t=1998.4s R16 ROW 2: Demon1 killed Inspire
+[KILL] t=2023.7s R16 ROW 3: Demon1 killed P0PPIN
+[KILL] t=2024.0s R16 ROW 1: P0PPIN killed penny
+[KILL] t=2024.0s R16 ROW 2: Eggsterr killed Xeppaa
+[KILL] t=2025.4s R16 ROW 4: keznit killed Demon1
+[ROUND] Score: 10-5 -> 11-5 at t=2026.3s (conf: L=1.00, R=1.00)
+[KILL] t=2026.4s R16 ROW 5: keznit killed v1c
+[KILL] t=2065.8s R17 ROW 1: Demon1 killed Inspire
+[KILL] t=2107.5s R17 ROW 1: P0PPIN killed penny
+[KILL] t=2111.0s R17 ROW 2: Eggsterr killed Demon1
+[KILL] t=2111.3s R17 ROW 3: Zellsis killed P0PPIN
+[KILL] t=2112.3s R17 ROW 4: Eggsterr killed Xeppaa
+[KILL] t=2113.9s R17 ROW 4: Zellsis killed keznit
+[KILL] t=2116.4s R17 ROW 4: Zellsis killed Eggsterr
+[ROUND] Score: 11-5 -> 11-6 at t=2141.6s (conf: L=1.00, R=1.00)
+[KILL] t=2208.1s R18 ROW 1: Eggsterr killed penny
+[KILL] t=2208.4s R18 ROW 1: Eggsterr killed curry
+[KILL] t=2212.7s R18 ROW 2: v1c killed Eggsterr
+[KILL] t=2221.7s R18 ROW 1: Demon1 killed P0PPIN
+[KILL] t=2224.3s R18 ROW 2: keznit killed Demon1
+[KILL] t=2225.6s R18 ROW 3: v1c killed keznit
+[KILL] t=2227.7s R18 ROW 3: Inspire killed v1c
+[KILL] t=2230.0s R18 ROW 3: Inspire killed Zellsis
+[ROUND] Score: 11-6 -> 11-7 at t=2231.7s (conf: L=1.00, R=1.00)
+[KILL] t=2232.3s R18 ROW 1: Inspire killed vice
+[KILL] t=2233.0s R18 ROW 2: Inspire killed Xeppaa
+[KILL] t=2252.4s R19 ROW 1: Eggsterr killed penny
+[KILL] t=2286.4s R19 ROW 1: v1c killed keznit
+[KILL] t=2290.1s R19 ROW 2: v1c killed Eggsterr
+[KILL] t=2294.0s R19 ROW 2: Inspire killed v1c
+[KILL] t=2305.5s R19 ROW 2: Demon1 killed P0PPIN
+[KILL] t=2306.8s R19 ROW 3: Zellsis killed Inspire
+[ROUND] Score: 11-7 -> 11-8 at t=2400.3s (conf: L=1.00, R=1.00)
+[KILL] t=2429.9s R20 ROW 1: P0PPIN killed Zellsis
+[KILL] t=2431.8s R20 ROW 2: Xeppaa killed keznit
+[KILL] t=2450.1s R20 ROW 1: penny killed P0PPIN
+[KILL] t=2450.5s R20 ROW 2: penny killed Eggsterr
+[KILL] t=2457.9s R20 ROW 1: penny killed Inspire
+[KILL] t=2476.1s R20 ROW 1: Rossy killed penny
+[ROUND] Score: 11-8 -> 11-9 at t=2476.4s (conf: L=1.00, R=1.00)
+[KILL] t=2522.6s R21 ROW 1: penny killed Eggsterr
+[KILL] t=2526.0s R21 ROW 3: Zellsis killed keznit
+[KILL] t=2526.2s R21 ROW 2: penny killed Rossy
+[KILL] t=2546.5s R21 ROW 1: Zellsis killed Inspire
+[KILL] t=2550.0s R21 ROW 2: penny killed P0PPIN
+[ROUND] Score: 11-9 -> 11-10 at t=2550.0s (conf: L=1.00, R=1.00)
+[KILL] t=2592.2s R22 ROW 1: P0PPIN killed penny
+[KILL] t=2597.4s R22 ROW 2: Demon1 killed Inspire
+[KILL] t=2645.3s R22 ROW 1: keznit killed Xeppaa
+[KILL] t=2650.8s R22 ROW 1: Eggsterr killed Demon1
+[KILL] t=2653.0s R22 ROW 2: keznit killed Zellsis
+[KILL] t=2680.5s R22 ROW 1: v1c killed keznit
+[ROUND] Score: 11-10 -> 12-10 at t=2681.2s (conf: L=1.00, R=1.00)
+[KILL] t=2681.8s R22 ROW 2: Eggsterr killed v1c
+[KILL] t=2684.6s R22 ROW 2: Eggsterr killed mitch
+[KILL] t=2685.4s R22 ROW 2: Eggsterr killed vice
+[KILL] t=2726.8s R23 ROW 1: Demon1 killed P0PPIN
+[KILL] t=2742.2s R23 ROW 1: Demon1 killed Eggsterr
+[KILL] t=2748.8s R23 ROW 2: Demon1 killed keznit
+[ROUND] Score: 12-10 -> 12-11 at t=2749.4s (conf: L=1.00, R=1.00)
+[KILL] t=2751.3s R23 ROW 2: Demon1 killed Inspire
+[KILL] t=2765.8s R24 ROW 1: Demon1 killed P0PPIN
+[KILL] t=2768.2s R24 ROW 1: Demon1 killed Eggsterr
+[KILL] t=2772.0s R24 ROW 1: Demon1 killed Rossy
+[KILL] t=2773.2s R24 ROW 2: Demon1 killed keznit
+[KILL] t=2791.0s R24 ROW 1: Xeppaa killed keznit
+[KILL] t=2801.3s R24 ROW 1: penny killed P0PPIN
+[KILL] t=2820.7s R24 ROW 1: Eggsterr killed Demon1
+[KILL] t=2842.0s R24 ROW 1: Inspire killed Zellsis
+[KILL] t=2842.0s R24 ROW 2: Xeppaa killed Inspire
+[KILL] t=2847.5s R24 ROW 1: Eggsterr killed Xeppaa
+[KILL] t=2853.8s R24 ROW 2: v1c killed Eggsterr
+[ROUND] Score: 12-11 -> 12-12 at t=2858.1s (conf: L=1.00, R=1.00)
+[KILL] t=2872.4s R25 ROW 1: Eggsterr killed Xeppaa
+[KILL] t=2963.4s R25 ROW 1: Inspire killed Demon1
+[KILL] t=2993.4s R25 ROW 1: P0PPIN killed penny
+[KILL] t=2993.7s R25 ROW 2: Xeppaa killed Eggsterr
+[KILL] t=2996.2s R25 ROW 3: Xeppaa killed keznit
+[KILL] t=3002.8s R25 ROW 1: Inspire killed v1c
+[KILL] t=3011.0s R25 ROW 1: Inspire killed Zellsis
+[KILL] t=3024.0s R25 ROW 1: Xeppaa killed P0PPIN
+[KILL] t=3030.7s R25 ROW 1: Rossy killed Xeppaa
+[KILL] t=3030.7s R25 ROW 2: Xeppaa killed Inspire
+[ROUND] Score: 12-12 -> 13-12 at t=3037.4s (conf: L=0.95, R=1.00)
+[KILL] t=3234.1s R26 ROW 1: penny killed P0PPIN
+[KILL] t=3235.4s R26 ROW 2: keznit killed curry
+[KILL] t=3236.2s R26 ROW 3: v1c killed keznit
+[KILL] t=3236.6s R26 ROW 2: keznit killed penny
+[KILL] t=3236.9s R26 ROW 4: Eggsterr killed v1c
+[KILL] t=3266.0s R26 ROW 1: Xeppaa killed Eggsterr
+[KILL] t=3275.5s R26 ROW 1: Xeppaa killed Inspire
+[ROUND] Score: 13-12 -> 13-13 at t=3277.5s (conf: L=1.00, R=1.00)
+[KILL] t=3349.1s R27 ROW 1: P0PPIN killed Zellsis
+[KILL] t=3350.0s R27 ROW 2: Xeppaa killed P0PPIN
+[KILL] t=3382.6s R27 ROW 1: Inspire killed penny
+[KILL] t=3401.3s R27 ROW 1: Demon1 killed Eggsterr
+[KILL] t=3428.0s R27 ROW 1: v1c killed Rossy
+[KILL] t=3430.6s R27 ROW 2: Inspire killed v1c
+[KILL] t=3435.5s R27 ROW 2: Inspire killed Xeppaa
+[ROUND] Score: 13-13 -> 14-13 at t=3442.7s (conf: L=1.00, R=0.83)
+[KILL] t=3502.5s R28 ROW 1: v1c killed Eggsterr
+[KILL] t=3504.9s R28 ROW 3: Zellsis killed keznit
+[KILL] t=3505.1s R28 ROW 2: keznit killed vice
+[KILL] t=3507.6s R28 ROW 2: keznit killed v1c
+[KILL] t=3508.4s R28 ROW 1: keznit killed mitch
+[KILL] t=3518.6s R28 ROW 1: Xeppaa killed Inspire
+[ROUND] Score: 14-13 -> 14-14 at t=3520.2s (conf: L=1.00, R=1.00)
+[KILL] t=3521.6s R28 ROW 2: penny killed P0PPIN
+[KILL] t=3583.7s R29 ROW 1: Inspire killed penny
+[KILL] t=3587.5s R29 ROW 2: keznit killed v1c
+[KILL] t=3629.3s R29 ROW 1: Eggsterr killed Xeppaa
+[KILL] t=3629.3s R29 ROW 2: keznit killed Demon1
+[KILL] t=3630.0s R29 ROW 3: Eggsterr killed Zellsis
+[ROUND] Score: 14-14 -> 15-14 at t=3630.2s (conf: L=1.00, R=1.00)
+[KILL] t=3716.2s R30 ROW 1: Demon1 killed Inspire
+[KILL] t=3731.3s R30 ROW 1: penny killed keznit
+[KILL] t=3731.8s R30 ROW 2: P0PPIN killed v1c
+[KILL] t=3732.1s R30 ROW 3: Xeppaa killed Eggsterr
+[KILL] t=3732.3s R30 ROW 4: Zellsis killed P0PPIN
+[KILL] t=3733.1s R30 ROW 2: P0PPIN killed mitch
+[ROUND] Score: 15-14 -> 15-15 at t=3747.8s (conf: L=1.00, R=1.00)
+[KILL] t=3806.1s R31 ROW 1: Inspire killed Xeppaa
+[KILL] t=3806.7s R31 ROW 2: Inspire killed v1c
+[KILL] t=3807.4s R31 ROW 3: penny killed Inspire
+[KILL] t=3809.9s R31 ROW 4: penny killed keznit
+[KILL] t=3817.6s R31 ROW 1: P0PPIN killed Zellsis
+[KILL] t=3817.6s R31 ROW 2: penny killed Eggsterr
+[KILL] t=3819.8s R31 ROW 3: penny killed P0PPIN
+[ROUND] Score: 15-15 -> 15-16 at t=3820.9s (conf: L=1.00, R=1.00)
+[KILL] t=3821.3s R31 ROW 4: Demon1 killed Rossy
+[KILL] t=3834.4s R32 ROW 1: Inspire killed Xeppaa
+[KILL] t=3885.0s R32 ROW 1: penny killed Eggsterr
+[KILL] t=3887.7s R32 ROW 2: keznit killed Zellsis
+[KILL] t=3894.0s R32 ROW 1: keznit killed penny
+[KILL] t=3911.6s R32 ROW 1: P0PPIN killed v1c
+[KILL] t=3920.7s R32 ROW 1: keznit killed Xeppaa
+[KILL] t=3921.1s R32 ROW 2: Demon1 killed P0PPIN
+[ROUND] Score: 15-16 -> 16-16 at t=3922.6s (conf: L=1.00, R=1.00)
+[KILL] t=3923.3s R32 ROW 3: Rossy killed Demon1
+[KILL] t=3974.6s R33 ROW 1: P0PPIN killed penny
+[KILL] t=4041.8s R33 ROW 1: Inspire killed Zellsis
+[KILL] t=4044.9s R33 ROW 2: Xeppaa killed Inspire
+[KILL] t=4053.8s R33 ROW 1: keznit killed Xeppaa
+[KILL] t=4056.3s R33 ROW 4: vice killed keznit
+[KILL] t=4056.7s R33 ROW 3: keznit killed Demon1
+[KILL] t=4067.9s R33 ROW 1: v1c killed Eggsterr
+[KILL] t=4071.5s R33 ROW 2: v1c killed P0PPIN
+[ROUND] Score: 16-16 -> 16-17 at t=4071.7s (conf: L=1.00, R=1.00)
+[KILL] t=4133.3s R34 ROW 1: Eggsterr killed Zellsis
+[KILL] t=4134.1s R34 ROW 2: penny killed Eggsterr
+[KILL] t=4137.8s R34 ROW 3: Inspire killed Xeppaa
+[KILL] t=4144.0s R34 ROW 1: Inspire killed penny
+[KILL] t=4146.8s R34 ROW 2: v1c killed P0PPIN
+[ROUND] Score: 16-17 -> 17-17 at t=4152.9s (conf: L=1.00, R=1.00)
+[KILL] t=4153.6s R34 ROW 1: Rossy killed Demon1
+[KILL] t=4168.1s R35 ROW 1: Eggsterr killed Zellsis
+[KILL] t=4168.2s R35 ROW 2: penny killed Eggsterr
+[KILL] t=4244.3s R35 ROW 1: Demon1 killed Rossy
+[KILL] t=4279.4s R35 ROW 1: keznit killed Zellsis
+[KILL] t=4281.4s R35 ROW 2: Demon1 killed keznit
+[KILL] t=4285.6s R35 ROW 2: Demon1 killed P0PPIN
+[KILL] t=4286.2s R35 ROW 3: Inspire killed penny
+[KILL] t=4286.9s R35 ROW 3: Eggsterr killed Demon1
+[KILL] t=4291.1s R35 ROW 3: Inspire killed v1c
+[KILL] t=4294.5s R35 ROW 2: Xeppaa killed Eggsterr
+[KILL] t=4297.8s R35 ROW 2: Xeppaa killed Inspire
+[ROUND] Score: 17-17 -> 17-18 at t=4298.0s (conf: L=1.00, R=1.00)
+[KILL] t=4314.0s R36 ROW 1: Inspire killed v1c
+[KILL] t=4374.8s R36 ROW 1: Demon1 killed keznit
+[KILL] t=4375.2s R36 ROW 2: Eggsterr killed curry
+[KILL] t=4375.3s R36 ROW 2: Eggsterr killed penny
+[KILL] t=4375.9s R36 ROW 4: Inspire killed Demon1
+[KILL] t=4441.1s R36 ROW 1: P0PPIN killed Zellsis
+[KILL] t=4441.6s R36 ROW 2: Xeppaa killed P0PPIN
+[KILL] t=4444.9s R36 ROW 3: Inspire killed Xeppaa
+[ROUND] Score: 17-18 -> 18-18 at t=4453.2s (conf: L=1.00, R=1.00)
+[KILL] t=4467.5s R37 ROW 1: Demon1 killed keznit
+[KILL] t=4512.5s R37 ROW 1: P0PPIN killed Demon1
+[KILL] t=4515.0s R37 ROW 2: P0PPIN killed penny
+[KILL] t=4568.5s R37 ROW 1: v1c killed Eggsterr
+[KILL] t=4572.2s R37 ROW 2: v1c killed Rossy
+[KILL] t=4600.0s R37 ROW 1: Xeppaa killed P0PPIN
+[KILL] t=4601.3s R37 ROW 2: Zellsis killed Inspire
+[ROUND] Score: 18-18 -> 18-19 at t=4606.7s (conf: L=1.00, R=1.00)
+[KILL] t=4606.9s R37 ROW 1: Xeppaa killed keznit
+[KILL] t=4688.2s R38 ROW 1: Xeppaa killed Eggsterr
+[KILL] t=4692.0s R38 ROW 3: P0PPIN killed Xeppaa
+[KILL] t=4692.6s R38 ROW 4: penny killed keznit
+[KILL] t=4694.3s R38 ROW 1: Rossy killed Demon1
+[KILL] t=4695.1s R38 ROW 4: penny killed P0PPIN
+[KILL] t=4708.7s R38 ROW 1: v1c killed Rossy
+[KILL] t=4738.9s R38 ROW 1: vice killed Inspire

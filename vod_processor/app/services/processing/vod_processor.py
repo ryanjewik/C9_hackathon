@@ -56,27 +56,6 @@ class RateGate:
         return False
 
 
-def _build_orange_mask(hsv: np.ndarray) -> np.ndarray:
-    """Build a complete orange mask that includes both hue ranges.
-    
-    Orange/red hues wrap around 0 in HSV:
-      Primary:   H in [0, 25]  (standard orange)
-      Secondary: H in [160, 180] (red/pink/magenta)
-    Both ranges are needed to capture all orange-family colours in the
-    broadcast (including self-kill rows that may have shifted hues).
-    """
-    mask1 = cv2.inRange(hsv,
-                        np.array(TEAM_COLORS["orange"]["lower"]),
-                        np.array(TEAM_COLORS["orange"]["upper"]))
-    # Include secondary range if defined
-    if "lower2" in TEAM_COLORS["orange"] and "upper2" in TEAM_COLORS["orange"]:
-        mask2 = cv2.inRange(hsv,
-                            np.array(TEAM_COLORS["orange"]["lower2"]),
-                            np.array(TEAM_COLORS["orange"]["upper2"]))
-        mask1 = cv2.bitwise_or(mask1, mask2)
-    return mask1
-
-
 def roi_to_px(frame_w: int, frame_h: int, roi_norm: Tuple[float, float, float, float]) -> Tuple[int, int, int, int]:
     """Convert normalized ROI coordinates to pixel coordinates."""
     x, y, w, h = roi_norm
@@ -178,7 +157,6 @@ class VODProcessor:
         map_name: Optional[str] = None,
         left_player_pool: Optional[List[str]] = None,
         right_player_pool: Optional[List[str]] = None,
-        strict_roster: bool = False,
     ) -> Dict[str, Any]:
         """
         Process a VOD file and extract timeline data.
@@ -193,8 +171,6 @@ class VODProcessor:
             map_name: Map name (e.g., "Abyss")
             left_player_pool: All players who have ever played for left team (for OCR validation)
             right_player_pool: All players who have ever played for right team (for OCR validation)
-            strict_roster: If True, use ONLY the provided player pools for matching
-                          (skip DB historical roster loading). Best when exact 5v5 rosters known.
             
         Returns:
             Dictionary with processing results
@@ -206,15 +182,12 @@ class VODProcessor:
         self._left_team_code = left_team
         self._right_team_code = right_team
         self._map_name = map_name
-        self._strict_roster = strict_roster
         
         # Store player pools for OCR validation
         self._left_player_pool = left_player_pool
         self._right_player_pool = right_player_pool
         
         print(f"[{job_id}] Team codes: left={left_team}, right={right_team}, map={map_name}")
-        if strict_roster:
-            print(f"[{job_id}] STRICT ROSTER MODE — matching only against provided players")
         if left_player_pool:
             print(f"[{job_id}] Left player pool ({len(left_player_pool)}): {left_player_pool}")
         if right_player_pool:
@@ -280,8 +253,7 @@ class VODProcessor:
                     print(f"[{job_id}] Auto-detected right team: {detected_right}")
                 
                 # Load player pools from database for detected teams
-                # Skip when strict_roster — user-provided pools must not be overwritten
-                if not strict_roster and (self._left_team_code or self._right_team_code) and (not left_player_pool and not right_player_pool):
+                if (self._left_team_code or self._right_team_code) and (not left_player_pool and not right_player_pool):
                     print(f"[{job_id}] Loading player pools from database for detected teams...")
                     from vod_processor.app.services.db.db_player_matcher import load_match_players_from_db
                     try:
@@ -300,37 +272,24 @@ class VODProcessor:
                         right_player_pool = self._right_player_pool
                     except Exception as e:
                         print(f"[{job_id}] Failed to load player pools from DB: {e}")
-                elif strict_roster:
-                    print(f"[{job_id}] Strict roster: skipping DB player pool loading")
                 
                 # --- Player-name validation: if detected team's player pool
                 #     doesn't overlap with the names from the HUD, try the next
                 #     best candidate tag (handles TL-vs-IL style ambiguity). ---
-                # Skip when strict_roster — user-provided pools must not be overwritten
-                if not strict_roster:
-                    self._validate_team_via_players(
-                        job_id, cap, fps, left_candidates, right_candidates
-                    )
-                    left_player_pool = self._left_player_pool
-                    right_player_pool = self._right_player_pool
-                else:
-                    print(f"[{job_id}] Strict roster: skipping team-via-players validation")
+                self._validate_team_via_players(
+                    job_id, cap, fps, left_candidates, right_candidates
+                )
+                left_player_pool = self._left_player_pool
+                right_player_pool = self._right_player_pool
                 
                 # Reset video position after team detection
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             
-            # Strict roster: skip HUD extraction, use provided rosters directly
-            if strict_roster and left_player_pool and right_player_pool:
-                print(f"[{job_id}] Strict roster: skipping HUD player extraction")
-                self._player_matcher.set_match_players(
-                    left_player_pool, right_player_pool, strict=True
-                )
-            else:
-                # Extract player names from first few seconds
-                self._job_manager.update_job_status(
-                    job_id, JobStatus.PROCESSING, "Extracting player names..."
-                )
-                self._extract_players_from_video(cap, fps, match_players, left_player_pool, right_player_pool)
+            # Extract player names from first few seconds
+            self._job_manager.update_job_status(
+                job_id, JobStatus.PROCESSING, "Extracting player names..."
+            )
+            self._extract_players_from_video(cap, fps, match_players, left_player_pool, right_player_pool)
             
             # Reset video to start
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -360,7 +319,6 @@ class VODProcessor:
                 crops_dir = os.path.join(output_dir, "crops")
                 os.makedirs(crops_dir, exist_ok=True)
                 killfeed_detector._crop_output_dir = crops_dir
-                self._killfeed_detector = killfeed_detector  # expose for diagnostic access
                 print(f"[{job_id}] Weapon icon crops will be saved to {crops_dir}")
             
             # Connect TopHUD halftime detection to KillfeedDetector
@@ -383,8 +341,6 @@ class VODProcessor:
             sample_interval = max(1, int(fps / self.settings.frame_sample_fps))
             skipped_replay_frames = 0
             skipped_transition_frames = 0
-            skipped_prematch_frames = 0
-            match_started = False
             prev_frame_state = "GAMEPLAY"
             
             self._job_manager.update_job_status(
@@ -427,8 +383,8 @@ class VODProcessor:
                     ))
                     
                     # Notify KillfeedDetector when entering REPLAY mode
-                    # This triggers a lookback filter to remove kills just before replay started
-                    if frame_state == "REPLAY" and prev_frame_state != "REPLAY":
+                    # This allows it to filter out kills that happened just before the replay
+                    if frame_state == "REPLAY" and prev_frame_state == "GAMEPLAY":
                         for d in detectors:
                             if hasattr(d, 'on_replay_detected'):
                                 d.on_replay_detected(t_ms)
@@ -436,8 +392,6 @@ class VODProcessor:
                     prev_frame_state = frame_state
                 
                 # Skip non-gameplay frames
-                # REPLAY: Any overlay text visible (REPLAY/CLUTCH/THRIFTY/FLAWLESS)
-                #         means replay/highlight footage — skip killfeed entirely
                 if frame_state == "REPLAY":
                     skipped_replay_frames += 1
                     frame_idx += 1
@@ -447,26 +401,7 @@ class VODProcessor:
                     frame_idx += 1
                     continue
                 
-                # Gate: skip killfeed detection until match starts (0-0 score confirmed)
-                if not match_started:
-                    if top_hud_detector and top_hud_detector.has_confirmed_zero_zero():
-                        match_started = True
-                        print(f"[PROC] Match started at t={t_ms/1000:.1f}s — enabling killfeed detection", flush=True)
-                    else:
-                        # Still run TopHUD detector to look for 0-0 score, but skip killfeed
-                        skipped_prematch_frames += 1
-                        for detector in detectors:
-                            if isinstance(detector, type(top_hud_detector)):
-                                roi_name = detector.roi_name
-                                if roi_name in roi_px_cache:
-                                    roi_px = roi_px_cache[roi_name]
-                                    roi_frame = crop(frame, roi_px)
-                                    if roi_frame.size > 0:
-                                        detector.process(t_ms, roi_frame)
-                        frame_idx += 1
-                        continue
-                
-                # Run detectors (only during GAMEPLAY after match started)
+                # Run detectors (only during GAMEPLAY)
                 frame_events = []
                 for detector in detectors:
                     roi_name = detector.roi_name
@@ -543,32 +478,7 @@ class VODProcessor:
             # Filter out ghost players (OCR artifacts that matched historical roster names)
             # A ghost player appears only 1-2 times total (kills + deaths) when real players
             # typically have many more interactions across a full match
-            all_events, ghost_removed = self._filter_ghost_player_kills(job_id, all_events)
-            
-            # Delete orphan crop files for ghost-filtered events (Fix 10)
-            if ghost_removed:
-                orphan_count = 0
-                for ev in ghost_removed:
-                    _key = (
-                        ev.payload.get("killer_name", "").lower(),
-                        ev.payload.get("victim_name", "").lower(),
-                        int(ev.t_ms),
-                    )
-                    for d in detectors:
-                        for fpath in d._crop_file_paths.pop(_key, []):
-                            try:
-                                os.remove(fpath)
-                                orphan_count += 1
-                            except OSError:
-                                pass
-                if orphan_count:
-                    print(f"[{job_id}] Ghost orphan cleanup: deleted {orphan_count} crop/diag files")
-            
-            # Collect REPLAY-removed kills from all detectors
-            replay_removed = []
-            for d in detectors:
-                if hasattr(d, '_replay_removed_kills'):
-                    replay_removed.extend(d._replay_removed_kills)
+            all_events = self._filter_ghost_player_kills(job_id, all_events)
             
             # Build timeline
             timeline = self._build_timeline(
@@ -593,17 +503,6 @@ class VODProcessor:
             with open(timeline_path, "w") as f:
                 json.dump(timeline, f, indent=2)
             
-            # Save invalidated kills (ghost player + replay filter removals)
-            if ghost_removed or replay_removed:
-                invalidated = {
-                    "ghost_removed": [asdict(e) for e in ghost_removed],
-                    "replay_removed": [asdict(e) for e in replay_removed],
-                }
-                inv_path = os.path.join(output_dir, f"{job_id}_invalidated.json")
-                with open(inv_path, "w") as f:
-                    json.dump(invalidated, f, indent=2)
-                print(f"[{job_id}] Saved {len(ghost_removed)} ghost + {len(replay_removed)} replay invalidated kills to {inv_path}")
-            
             # Save kill summary
             kill_events = [e for e in all_events if e.type == "KILL_EVENT"]
             round_transitions = [e for e in all_events if e.type == "ROUND_TRANSITION"]
@@ -613,8 +512,8 @@ class VODProcessor:
                 json.dump(summary, f, indent=2)
             
             # Log skipped frames
-            if skipped_replay_frames > 0 or skipped_transition_frames > 0 or skipped_prematch_frames > 0:
-                print(f"[{job_id}] Skipped frames - Prematch: {skipped_prematch_frames}, Replay: {skipped_replay_frames}, Transition: {skipped_transition_frames}")
+            if skipped_replay_frames > 0 or skipped_transition_frames > 0:
+                print(f"[{job_id}] Skipped frames - Replay: {skipped_replay_frames}, Transition: {skipped_transition_frames}")
             
             # Update job status
             self._job_manager.update_job_status(
@@ -996,7 +895,7 @@ class VODProcessor:
         
         # Filter out kills involving ghost players
         filtered_events = []
-        ghost_removed = []
+        removed_count = 0
         
         for e in events:
             if e.type == "KILL_EVENT":
@@ -1005,9 +904,9 @@ class VODProcessor:
                 
                 if victim in ghost_players:
                     # Remove this kill - the victim is a ghost player
+                    removed_count += 1
                     t_sec = e.t_ms / 1000
                     print(f"[{job_id}] Ghost filter removed: {killer} killed {victim} at t={t_sec:.1f}s (ghost victim)")
-                    ghost_removed.append(e)
                     continue
                     
                 # Note: We don't filter by ghost killer because if OCR read the killer name,
@@ -1015,10 +914,10 @@ class VODProcessor:
             
             filtered_events.append(e)
         
-        if ghost_removed:
-            print(f"[{job_id}] Ghost player filter: removed {len(ghost_removed)} kill events")
+        if removed_count > 0:
+            print(f"[{job_id}] Ghost player filter: removed {removed_count} kill events")
         
-        return filtered_events, ghost_removed
+        return filtered_events
     
     def _build_kill_summary(self, kill_events: List[Event], round_transitions: List[Event]) -> Dict[str, Any]:
         """Build a summary of kills with team assignments."""
@@ -1273,69 +1172,6 @@ class VODProcessor:
         
         return left_team, right_team, left_candidates, right_candidates
     
-    def _find_team_by_hud_names(self, hud_names: List[str]) -> tuple:
-        """Query the database directly to find which team a set of HUD player
-        names belongs to.  Returns (team_tag, match_count) with the most
-        matching players, or (None, 0) if no matches found.
-        
-        This is the nuclear fallback: when OCR-derived tag candidates all fail
-        player-overlap checks, we bypass the tag entirely and let the player
-        names speak for themselves.
-        """
-        import psycopg2
-        # Filter to names that look like real player names (>= 3 chars, mostly alpha)
-        valid_names = []
-        for n in hud_names:
-            stripped = n.strip()
-            if len(stripped) < 3:
-                continue
-            alpha_ratio = sum(1 for c in stripped if c.isalpha()) / len(stripped)
-            if alpha_ratio < 0.5:
-                continue
-            valid_names.append(stripped.lower())
-        
-        if not valid_names:
-            return None
-        
-        try:
-            host = os.environ.get('POSTGRES_HOST', 'localhost')
-            if host == 'postgres':
-                host = 'host.docker.internal'
-            conn = psycopg2.connect(
-                host=host,
-                port=int(os.environ.get('POSTGRES_PORT', 5432)),
-                user=os.environ.get('POSTGRES_USER', 'postgres'),
-                password=os.environ.get('POSTGRES_PASSWORD', ''),
-                dbname=os.environ.get('POSTGRES_DB', 'cloud9'),
-            )
-            cur = conn.cursor()
-            placeholders = ','.join(['%s'] * len(valid_names))
-            query = (
-                f"SELECT UPPER(t.team_tag), COUNT(DISTINCT LOWER(p.nickname)) "
-                f"FROM esports_players p "
-                f"JOIN esports_teams t ON p.team_id = t.id "
-                f"WHERE LOWER(p.nickname) IN ({placeholders}) "
-                f"GROUP BY t.team_tag "
-                f"ORDER BY 2 DESC LIMIT 5"
-            )
-            cur.execute(query, valid_names)
-            rows = cur.fetchall()
-            cur.close()
-            conn.close()
-            
-            if rows:
-                print(f"[TeamValidation] DB player-name search results: {rows}")
-                best_tag, best_count = rows[0]
-                if best_count >= 2:
-                    return best_tag, best_count
-                # If only 1 match and it's clearly the best, still accept
-                if best_count == 1 and (len(rows) == 1 or rows[1][1] < best_count):
-                    return best_tag, best_count
-            return None, 0
-        except Exception as e:
-            print(f"[TeamValidation] DB player-name search failed: {e}")
-            return None, 0
-
     def _validate_team_via_players(
         self,
         job_id: str,
@@ -1347,27 +1183,26 @@ class VODProcessor:
         """Validate detected teams by extracting HUD player names and checking
         against each candidate team's player pool from the database.
         
-        Two-phase approach:
-        1. For ambiguous sides (close candidate scores), check top candidates'
-           rosters against HUD names — handles OCR confusion like TL/IL/1L.
-        2. For ALL sides, verify the final team has player overlap. If not,
-           run a database-wide player-name search as a nuclear fallback.
+        If the current best-pick team has NO player overlap but an alternative
+        candidate does, switch to the alternative.  This handles OCR confusion
+        cases like TL/IL/1L where the wrong real team may outscore the correct
+        one in character-level voting.
         """
         from vod_processor.app.services.db.db_player_matcher import load_match_players_from_db
         
-        # Always extract HUD names — we need them for both phases
-        hud_names = self._quick_extract_hud_names(cap, fps)
-        if not hud_names['left'] and not hud_names['right']:
-            print("[TeamValidation] Could not extract any HUD names, skipping validation")
-            return
+        # Quick extraction of HUD player names for validation
+        # We'll do a lightweight scan: grab one frame, read the 5 player-name
+        # slots on each side and compare against candidate team rosters.
         
-        print(f"[TeamValidation] HUD names — left: {hud_names['left']}, right: {hud_names['right']}")
+        # We need the existing player pools (already loaded for best picks)
+        left_pool = self._left_player_pool or []
+        right_pool = self._right_player_pool or []
         
-        # ── Phase 1: Candidate-based validation (ambiguous sides only) ──
+        # Only validate sides that have close candidates (score gap < 15%)
         sides_to_check = []
-        for side, candidates, code_attr in [
-            ('left', left_candidates, '_left_team_code'),
-            ('right', right_candidates, '_right_team_code'),
+        for side, candidates, pool, code_attr in [
+            ('left', left_candidates, left_pool, '_left_team_code'),
+            ('right', right_candidates, right_pool, '_right_team_code'),
         ]:
             if len(candidates) < 2:
                 continue
@@ -1377,13 +1212,24 @@ class VODProcessor:
                 continue
             gap_pct = (best_score - runner_up_score) / best_score
             if gap_pct < 0.20:  # Top two are within 20%
-                sides_to_check.append((side, candidates, code_attr))
+                sides_to_check.append((side, candidates, pool, code_attr))
                 print(f"[TeamValidation] {side} team ambiguous — "
                       f"top={candidates[0][0]}({best_score:.1f}) vs "
                       f"runner={candidates[1][0]}({runner_up_score:.1f}), "
                       f"gap={gap_pct:.0%}")
         
-        for side, candidates, code_attr in sides_to_check:
+        if not sides_to_check:
+            return  # All picks are confident enough
+        
+        # Extract player names from HUD (lightweight: just 3 frames)
+        hud_names = self._quick_extract_hud_names(cap, fps)
+        if not hud_names['left'] and not hud_names['right']:
+            print("[TeamValidation] Could not extract any HUD names, skipping validation")
+            return
+        
+        print(f"[TeamValidation] HUD names — left: {hud_names['left']}, right: {hud_names['right']}")
+        
+        for side, candidates, pool, code_attr in sides_to_check:
             current_tag = candidates[0][0]
             side_names = hud_names.get(side, [])
             if not side_names:
@@ -1424,11 +1270,15 @@ class VODProcessor:
                     best_match_tag = tag
             
             if best_match_tag != current_tag and best_match_count > 0:
-                print(f"[TeamValidation] {side} team CORRECTED (phase 1): "
+                print(f"[TeamValidation] {side} team CORRECTED: "
                       f"'{current_tag}' -> '{best_match_tag}' "
                       f"(player overlap: {best_match_count}/{len(side_names)})")
+                
+                # Update team code and player pool
                 setattr(self, code_attr, best_match_tag)
                 setattr(self._player_matcher, code_attr, best_match_tag)
+                
+                # Reload player pool for corrected team
                 try:
                     if side == 'left':
                         new_pool, _ = load_match_players_from_db(best_match_tag, "")
@@ -1440,65 +1290,6 @@ class VODProcessor:
                         print(f"[{job_id}] Reloaded {len(self._right_player_pool)} players for {best_match_tag}")
                 except Exception as e:
                     print(f"[TeamValidation] Failed to reload pool for '{best_match_tag}': {e}")
-        
-        # ── Phase 2: Nuclear fallback — DB-wide player-name search ──
-        # For each side, verify the current team actually has player overlap.
-        # If not, search ALL teams in the database by player name.
-        print(f"[TeamValidation] Entering Phase 2 — checking {len(hud_names.get('left',[]))} left / {len(hud_names.get('right',[]))} right HUD names")
-        for side, code_attr, pool_attr in [
-            ('left', '_left_team_code', '_left_player_pool'),
-            ('right', '_right_team_code', '_right_player_pool'),
-        ]:
-            current_tag = getattr(self, code_attr, None)
-            current_pool = getattr(self, pool_attr, None) or []
-            side_names = hud_names.get(side, [])
-            
-            if not side_names or not current_tag:
-                continue
-            
-            # Check if current team has any overlap with HUD names
-            pool_lower = [p.lower() for p in current_pool]
-            overlap = 0
-            for name in side_names:
-                name_lower = name.lower()
-                for pool_name in pool_lower:
-                    if name_lower == pool_name or name_lower in pool_name or pool_name in name_lower:
-                        overlap += 1
-                        break
-            
-            if overlap >= 2:
-                print(f"[TeamValidation] {side} team '{current_tag}' verified: "
-                      f"{overlap}/{len(side_names)} HUD names match roster")
-                continue
-            
-            # Weak or no overlap — run DB-wide search to see if a better team exists
-            if overlap == 0:
-                print(f"[TeamValidation] {side} team '{current_tag}' has 0 player overlap "
-                      f"with HUD names — running DB-wide player search...")
-            else:
-                print(f"[TeamValidation] {side} team '{current_tag}' has weak overlap "
-                      f"({overlap}/{len(side_names)}) — running DB-wide player search to verify...")
-            
-            found_tag, found_count = self._find_team_by_hud_names(side_names)
-            if found_tag and found_tag != current_tag and found_count > overlap:
-                print(f"[TeamValidation] {side} team CORRECTED (phase 2 DB search): "
-                      f"'{current_tag}' -> '{found_tag}' ({found_count} DB matches vs {overlap} current)")
-                setattr(self, code_attr, found_tag)
-                setattr(self._player_matcher, code_attr, found_tag)
-                try:
-                    if side == 'left':
-                        new_pool, _ = load_match_players_from_db(found_tag, "")
-                        self._left_player_pool = new_pool or []
-                        print(f"[{job_id}] Reloaded {len(self._left_player_pool)} players for {found_tag}")
-                    else:
-                        _, new_pool = load_match_players_from_db("", found_tag)
-                        self._right_player_pool = new_pool or []
-                        print(f"[{job_id}] Reloaded {len(self._right_player_pool)} players for {found_tag}")
-                except Exception as e:
-                    print(f"[TeamValidation] Failed to reload pool for '{found_tag}': {e}")
-            else:
-                print(f"[TeamValidation] {side} DB-wide search found no better match "
-                      f"(result={found_tag}), keeping '{current_tag}'")
     
     def _quick_extract_hud_names(
         self, cap: cv2.VideoCapture, fps: float
@@ -2154,7 +1945,6 @@ class FrameStateDetector:
     """
     
     # How long to persist REPLAY state after detection (in frames at ~6fps = ~2 seconds)
-    # Short persist to bridge frames where OCR misses between detections.
     REPLAY_PERSIST_FRAMES = 12
     
     def __init__(self):
@@ -2192,19 +1982,18 @@ class FrameStateDetector:
         
         Returns:
             "GAMEPLAY" - Normal gameplay, process events
-            "REPLAY" - Overlay text visible (REPLAY/CLUTCH/THRIFTY/FLAWLESS), skip killfeed
+            "REPLAY" - Replay mode, skip killfeed to avoid duplicates
             "TRANSITION" - Non-gameplay screen, skip all processing
         """
-        # Check for any overlay text (REPLAY, CLUTCH, THRIFTY, FLAWLESS)
-        # ALL overlay text means we're in replay/highlight footage — skip killfeed
-        detected = self._detect_replay_or_clutch_text(replay_roi, t_ms)
+        # Check for REPLAY or CLUTCH indicator (skip killfeed during these overlays)
+        detected_replay = self._detect_replay_or_clutch_text(replay_roi, t_ms)
         
-        if detected:
+        if detected_replay:
             # Reset persist counter on fresh detection
             self._replay_persist_counter = self.REPLAY_PERSIST_FRAMES
             return "REPLAY"
         
-        # If we detected overlay text recently, persist REPLAY state for a few more frames
+        # If we detected REPLAY recently, persist the state for a few more frames
         # This handles cases where OCR misses a frame but replay is still showing
         if self._replay_persist_counter > 0:
             self._replay_persist_counter -= 1
@@ -2218,10 +2007,17 @@ class FrameStateDetector:
     
     def _detect_replay_or_clutch_text(self, replay_roi: np.ndarray, t_ms: float = 0) -> bool:
         """
-        Detect if overlay text is visible in the bottom-right corner.
+        Detect if overlay text is visible in the bottom-right corner that indicates
+        we should skip killfeed processing.
         
-        ANY overlay text (REPLAY, CLUTCH, THRIFTY, FLAWLESS) means we're in
-        replay/highlight footage and should skip killfeed processing.
+        Detected overlays:
+        - REPLAY: Obviously replay footage
+        - CLUTCH: Shown during replay highlights of clutch moments
+        - THRIFTY: Shown when a team wins while spending less money
+        - FLAWLESS: Shown when a team wins without anyone dying
+        
+        All these overlays indicate segments where we should skip killfeed
+        processing to avoid duplicate detection during replays.
         
         Returns True if any overlay text is detected.
         """
@@ -2239,9 +2035,6 @@ class FrameStateDetector:
         white_ratio = np.sum(thresh > 0) / thresh.size
         
         # If there's some white content, try OCR (lowered threshold from 0.05 to 0.02)
-        _dbg_replay = (1280000 < t_ms < 1370000) or (1440000 < t_ms < 1480000) or (1935000 < t_ms < 1960000) or (2050000 < t_ms < 2090000)
-        if _dbg_replay and not (white_ratio > 0.02 and white_ratio < 0.7):
-            print(f"[REPLAY-DBG] t={t_ms/1000:.1f}s SKIPPED OCR: white_ratio={white_ratio:.3f} h={h} w={w}")
         if white_ratio > 0.02 and white_ratio < 0.7:
             self._init_ocr()
             if self._ocr_reader:
@@ -2252,26 +2045,18 @@ class FrameStateDetector:
                         detail=0,
                         paragraph=False,  # Don't merge - we want individual words
                     )
-                    
-                    # DEBUG: Log what OCR sees during known replay windows
-                    _dbg_replay = (1280000 < t_ms < 1370000) or (1440000 < t_ms < 1480000) or (1935000 < t_ms < 1960000) or (2050000 < t_ms < 2090000)
-                    if _dbg_replay and results:
-                        print(f"[REPLAY-DBG] t={t_ms/1000:.1f}s white_ratio={white_ratio:.3f} OCR={results}")
-                    elif _dbg_replay:
-                        print(f"[REPLAY-DBG] t={t_ms/1000:.1f}s white_ratio={white_ratio:.3f} OCR=<empty>")
-                    
                     for text in results:
                         if isinstance(text, str):
                             text_upper = text.upper().replace(" ", "").replace("_", "")
                             
-                            # CLUTCH = replay/highlight overlay
+                            # CLUTCH = skip to avoid replay duplicates
                             if "CLUTCH" in text_upper or "CLUT" in text_upper:
                                 if not self._last_replay_detection_logged:
                                     print(f"[FrameState] CLUTCH detected at t={t_ms/1000:.1f}s - entering REPLAY mode")
                                     self._last_replay_detection_logged = True
                                 return True
                             
-                            # REPLAY = replay footage
+                            # REPLAY = replay footage, skip to avoid duplicates
                             # Also match common OCR errors: REPLA, REPIAY, REPALY
                             if "REPLAY" in text_upper or "REPLA" in text_upper or "REPIAY" in text_upper:
                                 if not self._last_replay_detection_logged:
@@ -2279,38 +2064,17 @@ class FrameStateDetector:
                                     self._last_replay_detection_logged = True
                                 return True
                             
-                            # THRIFTY = round win overlay
+                            # THRIFTY = round win overlay, often followed by replay
                             if "THRIFTY" in text_upper or "THRIFT" in text_upper:
                                 if not self._last_replay_detection_logged:
                                     print(f"[FrameState] THRIFTY detected at t={t_ms/1000:.1f}s - entering REPLAY mode")
                                     self._last_replay_detection_logged = True
                                 return True
                             
-                            # FLAWLESS = round win overlay (no deaths)
+                            # FLAWLESS = round win overlay (no deaths), often followed by replay
                             if "FLAWLESS" in text_upper or "FLAWLES" in text_upper:
                                 if not self._last_replay_detection_logged:
                                     print(f"[FrameState] FLAWLESS detected at t={t_ms/1000:.1f}s - entering REPLAY mode")
-                                    self._last_replay_detection_logged = True
-                                return True
-                            
-                            # ACE = all 5 enemies killed by one player
-                            if text_upper == "ACE":
-                                if not self._last_replay_detection_logged:
-                                    print(f"[FrameState] ACE detected at t={t_ms/1000:.1f}s - entering REPLAY mode")
-                                    self._last_replay_detection_logged = True
-                                return True
-                            
-                            # OVERTIME = overtime round overlay
-                            if "OVERTIME" in text_upper or "OVERTIM" in text_upper:
-                                if not self._last_replay_detection_logged:
-                                    print(f"[FrameState] OVERTIME detected at t={t_ms/1000:.1f}s - entering REPLAY mode")
-                                    self._last_replay_detection_logged = True
-                                return True
-                            
-                            # RED BULL = sponsor overlay (broadcast)
-                            if "REDBULL" in text_upper or ("RED" in text_upper and "BULL" in text_upper):
-                                if not self._last_replay_detection_logged:
-                                    print(f"[FrameState] RED BULL detected at t={t_ms/1000:.1f}s - entering REPLAY mode")
                                     self._last_replay_detection_logged = True
                                 return True
                                 
@@ -2373,8 +2137,8 @@ class FrameStateDetector:
         teal_mask = cv2.inRange(hsv, (75, 80, 100), (105, 255, 255))
         teal_ratio = np.sum(teal_mask > 0) / teal_mask.size
         
-        # Check for orange (including secondary red/pink range)
-        orange_mask = _build_orange_mask(hsv)
+        # Check for orange (H: 0-25)
+        orange_mask = cv2.inRange(hsv, (0, 80, 100), (25, 255, 255))
         orange_ratio = np.sum(orange_mask > 0) / orange_mask.size
         
         # Should have at least some team color pixels
@@ -2415,7 +2179,7 @@ class KillfeedDetector(BaseDetector):
     
     # Per-round dedup: A player can only die ONCE per round in Valorant
     # Track when each victim last died to prevent duplicate detections
-    # (Removed: per-round dedup logic)
+    ROUND_DEDUP_WINDOW_MS = 90000  # 90 seconds - longer than any round duration
     
     def __init__(self, roi_name: str, target_fps: float):
         super().__init__(roi_name, target_fps)
@@ -2436,7 +2200,7 @@ class KillfeedDetector(BaseDetector):
         
         # NEW: Per-round kill tracking to prevent replay/duplicate detection
         # Key: normalized victim name, Value: (last_death_timestamp_ms, killer_name)
-        # (Removed: per-round dedup and victim death tracking)
+        self._victim_last_death: Dict[str, Tuple[float, str]] = {}
         # Track current round start time (set via set_round_start)
         self._current_round_start_ms: float = 0.0
         # Track current round number for halftime detection (starts at 1, not 0)
@@ -2461,12 +2225,6 @@ class KillfeedDetector(BaseDetector):
         # Crop saving: when set, weapon icon crops are written to this directory
         self._crop_output_dir: Optional[str] = None
         self._crop_counter: int = 0
-        self._crop_file_paths: dict = {}  # (killer_lower, victim_lower, int_t_ms) -> [path, ...]
-        self._ult_diagnostics: list = []  # collected per-crop ult badge metrics
-        # Deferred crop: wait 2 frames for the row to stabilize before cropping.
-        # Key: (killer_norm, victim_norm, round) -> dict with row_img, ktr, vtl, etc.
-        self._pending_crops: dict = {}
-        self._CROP_DEFER_FRAMES: int = 2  # number of frames to wait before cropping
         
         # Scheduled halftime start (delayed from transition to capture final kills)
         self._halftime_scheduled_ms: float = 0.0
@@ -2475,14 +2233,10 @@ class KillfeedDetector(BaseDetector):
         self._last_transition_round: int = 0
         
         # REPLAY lookback filter: When REPLAY is detected, invalidate kills from the
-        # previous ~2 seconds because the replay overlay appears slightly AFTER the
+        # previous ~1 second because the replay overlay appears slightly AFTER the
         # killfeed starts showing replay content
-        self._REPLAY_LOOKBACK_MS: float = 2000  # 2.0 seconds lookback
+        self._REPLAY_LOOKBACK_MS: float = 1500  # 1.5 seconds lookback
         self._pending_kills: List[Event] = []  # Buffer kills before confirming them
-        self._replay_removed_kills: List[Event] = []  # Kills removed by REPLAY filter
-        
-        # NOTE: Per-round victim death tracking removed — it was rejecting
-        # legitimate kills when OCR timing or replay detection was slightly off.
     
     def on_replay_detected(self, replay_start_ms: float):
         """
@@ -2494,26 +2248,14 @@ class KillfeedDetector(BaseDetector):
         original_count = len(self._pending_kills)
         
         # Filter out kills within the lookback window
-        kept = []
-        removed = []
-        for k in self._pending_kills:
-            if k.t_ms < cutoff_ms:
-                kept.append(k)
-            else:
-                removed.append(k)
-        self._pending_kills = kept
+        self._pending_kills = [
+            k for k in self._pending_kills
+            if k.t_ms < cutoff_ms
+        ]
         
-        filtered_count = len(removed)
+        filtered_count = original_count - len(self._pending_kills)
         if filtered_count > 0:
-            self._replay_removed_kills.extend(removed)
             print(f"[KillfeedDetector] REPLAY lookback filter: removed {filtered_count} kill(s) from t={cutoff_ms/1000:.1f}s to t={replay_start_ms/1000:.1f}s")
-            for k in removed:
-                if k.type == "KILL_EVENT":
-                    p = k.payload
-                    if p.get('is_self_kill'):
-                        print(f"[KILL-REMOVED] t={k.t_ms/1000:.1f}s {p['killer_name']} SELF-KILL (replay filter)")
-                    else:
-                        print(f"[KILL-REMOVED] t={k.t_ms/1000:.1f}s {p['killer_name']} killed {p['victim_name']} (replay filter)")
     
     def set_round_start(self, timestamp_ms: float, round_number: int = 0, left_score: int = 0, right_score: int = 0):
         """
@@ -2543,8 +2285,9 @@ class KillfeedDetector(BaseDetector):
         self._expected_left_score = left_score
         self._expected_right_score = right_score
         
-        # (death tracking removed)
-        print(f"[KillfeedDetector] Round {round_number} ended, now in round {self._current_round_number} at {timestamp_ms:.0f}ms (score: {left_score}-{right_score})")
+        # Clear victim death tracking for new round (players respawn)
+        self._victim_last_death.clear()
+        print(f"[KillfeedDetector] Round {round_number} ended, now in round {self._current_round_number} at {timestamp_ms:.0f}ms (score: {left_score}-{right_score}) - cleared death tracking")
     
     def set_halftime_start(self, timestamp_ms: float):
         """Called when halftime break begins (after round 12 ends).
@@ -2824,56 +2567,26 @@ class KillfeedDetector(BaseDetector):
                 return []  # Still in cooldown - reject potential replay kills
         
         self._cleanup_signatures(t_ms)
-        # ---- DEBUG: trace self-kill window ----
-        # Enable debug for known self-kill timestamps:
-        # R10 fall damage ~1455-1475s, R13 spike ~1940-1960s, R14 spike ~2055-2070s
-        _DBG_SELF = (1455000 < t_ms < 1475000) or (1935000 < t_ms < 1960000) or (2055000 < t_ms < 2070000)
-        if _DBG_SELF:
-            print(f"[DBG-SELF] t={t_ms/1000:.1f}s _detect ENTERED")
-        # ---- DEBUG: trace dead zone (R13-R25) kill pipeline ----
-        _DBG_DEAD = (1695000 <= t_ms <= 3100000)
-        if _DBG_DEAD and not hasattr(self, '_dbg_dead_counts'):
-            self._dbg_dead_counts = {"hash_skip": 0, "parse_none": 0, "conf": 0, "unk_name": 0, "db_miss": 0, "dup": 0, "accepted": 0, "rows_seen": 0}
-            self._dbg_dead_last_print = 0
         # Skip expensive OCR if killfeed hasn't changed
         if not self._has_significant_change(roi_frame):
-            if _DBG_SELF:
-                print(f"[DBG-SELF] t={t_ms/1000:.1f}s SKIPPED by _has_significant_change")
             return []
         events = []
         h, w = roi_frame.shape[:2]
         # Segment rows using fixed positions for consistent extraction
-        self._dbg_self = _DBG_SELF
         rows = self._segment_rows_fixed(roi_frame)
-        if _DBG_SELF:
-            print(f"[DBG-SELF] t={t_ms/1000:.1f}s _segment_rows_fixed returned {len(rows)} rows: {[(r[0], r[1], r[2]) for r in rows]}")
         
-        KILLFEED_DISPLAY_WINDOW_MS = 5500  # Kills visible ~5s + 500ms buffer for frame quantization
+        KILLFEED_DISPLAY_WINDOW_MS = 5000  # Kills stay visible for 5s
         for actual_row_idx, y_start, y_end, row_img in rows:
             # Per-row change detection - skip OCR if this row hasn't changed
             row_hash = self._compute_row_hash(row_img)
             if actual_row_idx in self._row_hashes and self._row_hashes[actual_row_idx] == row_hash:
-                if _DBG_SELF:
-                    print(f"[DBG-SELF] t={t_ms/1000:.1f}s ROW {actual_row_idx} skipped (row hash unchanged)")
-                if _DBG_DEAD:
-                    self._dbg_dead_counts["hash_skip"] += 1
                 continue  # Row unchanged, skip expensive OCR
-            if _DBG_DEAD:
-                self._dbg_dead_counts["rows_seen"] += 1
+            self._row_hashes[actual_row_idx] = row_hash
             
             entry = self._parse_row(row_img)
-            if _DBG_SELF:
-                print(f"[DBG-SELF] t={t_ms/1000:.1f}s ROW {actual_row_idx} _parse_row -> {entry}")
+
             if not entry:
-                if _DBG_DEAD:
-                    self._dbg_dead_counts["parse_none"] += 1
                 continue
-            
-            # NOTE: Do NOT store the row hash here.  We only seal the hash
-            # after the kill is *accepted* or confirmed as a *duplicate* of an
-            # already-accepted kill.  If the OCR produces garbled names that
-            # fail database/confidence filters, we want to retry this row on
-            # the next frame while the text is still at full opacity.
             
             # Get values
             killer_team = entry.get("killer_team", "unknown")
@@ -2884,37 +2597,17 @@ class KillfeedDetector(BaseDetector):
             
             # Filter 1: Require minimum confidence
             if confidence < 0.7:
-                if _DBG_DEAD:
-                    self._dbg_dead_counts["conf"] += 1
                 continue
             
             # Filter 2: Require BOTH killer and victim names (every kill has both in this VOD)
             # Exception: fall damage would only have victim, but that's rare
             if killer_name == "Unknown" or victim_name == "Unknown":
-                if _DBG_DEAD:
-                    self._dbg_dead_counts["unk_name"] += 1
-                    print(f"[DBG-DEAD] t={t_ms/1000:.1f}s R{actual_row_idx} Filter2: killer='{killer_name}' victim='{victim_name}'")
                 continue
             
             # Convert colors to team codes for team-aware player matching
-            # NOTE: _parse_row already overrides colors using the player matcher's
-            # side-based logic (left→teal, right→orange), so the colors here are
-            # already "canonical" (teal=left, orange=right) regardless of halftime.
-            # We must NOT apply halftime swap again via get_team_code_from_color(),
-            # which would double-swap and assign the wrong team pool.
-            # Instead, map directly: teal → left team, orange → right team.
-            if killer_team in ('teal', 'green', 'cyan'):
-                killer_team_code = self._left_team_code
-            elif killer_team in ('orange', 'red', 'yellow'):
-                killer_team_code = self._right_team_code
-            else:
-                killer_team_code = None
-            if victim_team in ('teal', 'green', 'cyan'):
-                victim_team_code = self._left_team_code
-            elif victim_team in ('orange', 'red', 'yellow'):
-                victim_team_code = self._right_team_code
-            else:
-                victim_team_code = None
+            # This is CRITICAL for players who've been on multiple teams (e.g., Crashies: NRG -> FNC)
+            killer_team_code = self.get_team_code_from_color(killer_team) if hasattr(self, 'get_team_code_from_color') else None
+            victim_team_code = self.get_team_code_from_color(victim_team) if hasattr(self, 'get_team_code_from_color') else None
             
             # Use fuzzy database matching with team-specific player pools
             # match_killfeed_name returns (player_name, extracted_team_code_from_ocr)
@@ -2941,8 +2634,6 @@ class KillfeedDetector(BaseDetector):
 
             # Filter 3: Skip if EITHER normalized name is Unknown (need both for valid kill)
             if killer_name_normalized == "Unknown" or victim_name_normalized == "Unknown":
-                if _DBG_DEAD:
-                    self._dbg_dead_counts["unk_name"] += 1
                 continue
             
             # Filter 4: If we have player matcher loaded, REQUIRE BOTH names to match database
@@ -2950,36 +2641,15 @@ class KillfeedDetector(BaseDetector):
             # coincidentally looks like a valid name but isn't in the match)
             if self._player_matcher:
                 if killer_name_db is None or victim_name_db is None:
-                    if _DBG_DEAD:
-                        self._dbg_dead_counts["db_miss"] += 1
-                        print(f"[DBG-DEAD] t={t_ms/1000:.1f}s Filter4: killer='{killer_name}'->db={killer_name_db}(team={killer_team_code}) victim='{victim_name}'->db={victim_name_db}(team={victim_team_code})")
                     # At least one name didn't match database - skip this kill
                     # This is stricter but prevents false positives when we know the player pool
                     continue
 
-            # (Filter 5 removed: per-round victim death tracking was too aggressive)
-
             # Check for duplicates using normalized names
             sig = (t_ms, killer_team, victim_team, killer_name_normalized, victim_name_normalized, actual_row_idx)
             if self._is_duplicate_scroll_aware(t_ms, sig, KILLFEED_DISPLAY_WINDOW_MS):
-                if _DBG_DEAD:
-                    self._dbg_dead_counts["dup"] += 1
-                # Check if there's a pending (deferred) crop for this kill.
-                # If so, update it with this frame's data (row is more stable now).
-                pending_key = (killer_name_normalized.lower(), victim_name_normalized.lower())
-                if pending_key in self._pending_crops:
-                    pc = self._pending_crops[pending_key]
-                    pc["row_img"] = row_img.copy()
-                    pc["frames_seen"] += 1
-                    if pc["frames_seen"] >= self._CROP_DEFER_FRAMES:
-                        self._finalize_deferred_crop(pending_key)
-                # Seal hash for confirmed duplicates
-                self._row_hashes[actual_row_idx] = row_hash
                 continue
             self.recent_signatures.append(sig)
-            
-            # Seal the row hash now that the kill is accepted.
-            self._row_hashes[actual_row_idx] = row_hash
             
             # Determine round number for display - if within 5s buffer of last transition,
             # the kill belongs to the ending round, not the new round
@@ -2991,38 +2661,28 @@ class KillfeedDetector(BaseDetector):
                 # Past buffer - kill belongs to current round
                 display_round = self._current_round_number
             
-            if _DBG_DEAD:
-                self._dbg_dead_counts["accepted"] += 1
-            
-            # Detect self-kill (fall damage, etc.) - killer and victim are the same player
-            is_self_kill = (killer_name_normalized.lower().strip() == victim_name_normalized.lower().strip())
-
             # Log the accepted kill - just player names, no team prefix (OCR may include it)
-            if is_self_kill:
-                print(f"[KILL] t={t_ms/1000:.1f}s R{display_round} ROW {actual_row_idx+1}: SELF-KILL (fall damage) {killer_name_normalized}")
-            else:
-                print(f"[KILL] t={t_ms/1000:.1f}s R{display_round} ROW {actual_row_idx+1}: {killer_name_normalized} killed {victim_name_normalized}")
+            print(f"[KILL] t={t_ms/1000:.1f}s R{display_round} ROW {actual_row_idx+1}: {killer_name_normalized} killed {victim_name_normalized}")
 
-            # Defer weapon/ability icon crop  — store for 2 frames to let the
-            # row stabilize (animation flash fades, text fully loads).
-            ktr = entry.get("killer_text_right")
-            vtl = entry.get("victim_text_left")
-            pending_key = (killer_name_normalized.lower(), victim_name_normalized.lower())
-            self._pending_crops[pending_key] = {
-                "row_img": row_img.copy(),
-                "ktr": ktr,
-                "vtl": vtl,
-                "t_ms": t_ms,
-                "display_round": display_round,
-                "killer_name": killer_name_normalized,
-                "victim_name": victim_name_normalized,
-                "is_self_kill": is_self_kill,
-                "actual_row_idx": actual_row_idx,
-                "frames_seen": 0,  # will increment on dup frames
-            }
-            print(f"[CROP-DEFER] crop pending for {killer_name_normalized} -> {victim_name_normalized} ktr={ktr} vtl={vtl} (waiting {self._CROP_DEFER_FRAMES} frames)")
+            # Track this victim's death for per-round deduplication
+            victim_key = victim_name_normalized.lower().strip() if victim_name_normalized != "Unknown" else None
+            if victim_key:
+                self._victim_last_death[victim_key] = (t_ms, killer_name_normalized)
 
-            entry["weapon_icon"] = None
+            # Extract weapon/ability icon crop for this confirmed kill
+            icon_img = None
+            try:
+                icon_img = self._extract_weapon_icon(row_img)
+            except Exception:
+                pass
+            if icon_img is not None and self._crop_output_dir:
+                self._crop_counter += 1
+                crop_path = os.path.join(
+                    self._crop_output_dir,
+                    f"crop_{self._crop_counter:05d}_t{int(t_ms)}ms.png"
+                )
+                cv2.imwrite(crop_path, icon_img)
+            entry["weapon_icon"] = icon_img
 
             # Create kill event with normalized names
             kill_event = Event(
@@ -3036,7 +2696,6 @@ class KillfeedDetector(BaseDetector):
                     "victim_team": victim_team,
                     "weapon": entry.get("weapon", "unknown"),
                     "is_headshot": entry.get("is_headshot", False),
-                    "is_self_kill": is_self_kill,
                 },
                 confidence=confidence
             )
@@ -3065,100 +2724,7 @@ class KillfeedDetector(BaseDetector):
         self._pending_kills = [k for k in self._pending_kills if k.t_ms >= flush_cutoff_ms]
         events.extend(confirmed_events)
         
-        # Finalize any deferred crops that have been pending long enough
-        # (safety net in case dup path was never hit, e.g. row disappeared)
-        stale_keys = [k for k, v in self._pending_crops.items()
-                      if v["frames_seen"] >= self._CROP_DEFER_FRAMES
-                      or (t_ms - v["t_ms"]) > 500]  # 500ms max wait
-        for pk in stale_keys:
-            self._finalize_deferred_crop(pk)
-        
-        # ---- DEBUG: periodic summary for dead zone ----
-        if _DBG_DEAD and hasattr(self, '_dbg_dead_counts'):
-            if t_ms - self._dbg_dead_last_print > 30000:  # Every 30s
-                c = self._dbg_dead_counts
-                print(f"[DBG-DEAD-SUMMARY] t={t_ms/1000:.1f}s rows_seen={c['rows_seen']} hash_skip={c['hash_skip']} parse_none={c['parse_none']} conf={c['conf']} unk_name={c['unk_name']} db_miss={c['db_miss']} dup={c['dup']} accepted={c['accepted']}")
-                self._dbg_dead_last_print = t_ms
-        
         return events
-
-    def _finalize_deferred_crop(self, pending_key: tuple) -> None:
-        """Finalize a deferred crop using the stored (stabilized) row image."""
-        pc = self._pending_crops.pop(pending_key, None)
-        if pc is None:
-            return
-        
-        row_img = pc["row_img"]
-        ktr = pc["ktr"]
-        vtl = pc["vtl"]
-        t_ms = pc["t_ms"]
-        
-        print(f"[CROP-DEFER] finalizing crop for {pc['killer_name']} -> {pc['victim_name']} (frames_seen={pc['frames_seen']})")
-        
-        # Seal the row hash now that we're done with this row
-        actual_row_idx = pc.get("actual_row_idx")
-        if actual_row_idx is not None:
-            row_hash = self._compute_row_hash(row_img)
-            self._row_hashes[actual_row_idx] = row_hash
-        
-        icon_img = None
-        try:
-            icon_img = self._extract_weapon_icon(
-                row_img,
-                killer_text_right=ktr,
-                victim_text_left=vtl,
-            )
-        except Exception as _crop_err:
-            import traceback; traceback.print_exc()
-            print(f"[CROP-ERR] _extract_weapon_icon failed: {_crop_err}")
-
-        # (Removed: ult-badge revalidation logic)
-
-        crop_method = getattr(self, '_last_crop_method', None) or "unknown"
-
-        if icon_img is not None and self._crop_output_dir:
-            self._crop_counter += 1
-            method_dir = os.path.join(self._crop_output_dir, crop_method)
-            os.makedirs(method_dir, exist_ok=True)
-            crop_path = os.path.join(
-                method_dir,
-                f"crop_{self._crop_counter:05d}_t{int(t_ms)}ms.png"
-            )
-            cv2.imwrite(crop_path, icon_img)
-
-            # Track crop paths for ghost orphan cleanup
-            _crop_key = (pc["killer_name"].lower(), pc["victim_name"].lower(), int(t_ms))
-            self._crop_file_paths.setdefault(_crop_key, []).append(crop_path)
-
-            # Diagnostic: save annotated full row alongside crop
-            try:
-                diag_dir = os.path.join(self._crop_output_dir, "diag")
-                os.makedirs(diag_dir, exist_ok=True)
-                diag_row = row_img.copy()
-                rh, rw = diag_row.shape[:2]
-                if ktr is not None:
-                    ktr_px = int(round(ktr))
-                    cv2.line(diag_row, (ktr_px, 0), (ktr_px, rh), (0, 0, 255), 2)
-                if vtl is not None:
-                    vtl_px = int(round(vtl))
-                    cv2.line(diag_row, (vtl_px, 0), (vtl_px, rh), (255, 0, 0), 2)
-                last_bounds = getattr(self, '_last_crop_bounds', None)
-                if last_bounds is not None:
-                    cx0, cx1 = last_bounds
-                    cv2.rectangle(diag_row, (cx0, 0), (cx1, rh), (0, 255, 0), 2)
-                last_zone = getattr(self, '_last_search_zone', None)
-                if last_zone is not None:
-                    sz0, sz1 = last_zone
-                    cv2.rectangle(diag_row, (sz0, 2), (sz1, rh - 2), (0, 255, 255), 1)
-                ult_bounds = getattr(self, '_last_ult_badge_bounds', None)
-                if ult_bounds is not None:
-                    ub0, ub1 = ult_bounds
-                    cv2.rectangle(diag_row, (ub0, 0), (ub1, rh), (255, 255, 0), 2)
-                diag_path = os.path.join(diag_dir, f"row_{self._crop_counter:05d}_t{int(t_ms)}ms.png")
-                cv2.imwrite(diag_path, diag_row)
-                self._crop_file_paths.setdefault(_crop_key, []).append(diag_path)
-            except Exception:
-                pass
 
     def _is_duplicate_scroll_aware(self, t_ms: float, sig: tuple, display_window_ms: int) -> bool:
         """
@@ -3168,24 +2734,73 @@ class KillfeedDetector(BaseDetector):
         So if we see the same VICTIM die again within a short window, it's definitely a duplicate.
         
         Dedup tiers (in priority order):
-        0. PER-ROUND VICTIM: Same victim died already this round (catches replay dupes)
         1. VICTIM-FOCUSED: Same victim within 4s = duplicate (strongest signal, tightened)
         2. FULL MATCH: Same killer+victim within display window = duplicate
         3. PARTIAL MATCH: Either name very similar within tight window
         4. SWAP CHECK: Names swapped (OCR error) = duplicate
-        
         """
-        _, _, _, killer_name, victim_name, _ = sig
-        killer_base = self._strip_team_prefix(self._correct_ocr_name(killer_name))
-        victim_base = self._strip_team_prefix(self._correct_ocr_name(victim_name))
-        for (sig_t, _, _, sig_kn, sig_vn, _) in self.recent_signatures:
+        _, killer_team, victim_team, killer_name, victim_name, row_idx = sig
+        
+        # Apply OCR correction BEFORE comparison - this normalizes common OCR errors
+        killer_corrected = self._correct_ocr_name(killer_name)
+        victim_corrected = self._correct_ocr_name(victim_name)
+        
+        # Normalize names for comparison (strip team prefixes)
+        killer_base = self._strip_team_prefix(killer_corrected)
+        victim_base = self._strip_team_prefix(victim_corrected)
+        
+        for (sig_t, sig_kt, sig_vt, sig_kn, sig_vn, sig_row) in self.recent_signatures:
             time_diff = t_ms - sig_t
             if time_diff > display_window_ms:
                 continue
-            sig_killer_base = self._strip_team_prefix(self._correct_ocr_name(sig_kn))
-            sig_victim_base = self._strip_team_prefix(self._correct_ocr_name(sig_vn))
+            
+            # Apply OCR correction to stored names too
+            sig_killer_corrected = self._correct_ocr_name(sig_kn)
+            sig_victim_corrected = self._correct_ocr_name(sig_vn)
+            
+            # Strip prefixes from stored names
+            sig_killer_base = self._strip_team_prefix(sig_killer_corrected)
+            sig_victim_base = self._strip_team_prefix(sig_victim_corrected)
+            
+            # EXACT MATCH after OCR correction = definitely duplicate
             if killer_base.lower() == sig_killer_base.lower() and victim_base.lower() == sig_victim_base.lower():
                 return True
+            
+            # Calculate similarities using corrected base names
+            killer_sim = self._name_similarity(killer_base, sig_killer_base)
+            victim_sim = self._name_similarity(victim_base, sig_victim_base)
+            
+            # TIER 1: VICTIM-FOCUSED dedup (strongest - player can only die once per round)
+            # Same victim within 3 seconds = DEFINITELY a duplicate (scrolling or repeated detection)
+            # Tightened to 3s since we now have OCR correction reducing false matches
+            if victim_sim > 0.70 and time_diff < 3000:
+                # Don't require team match - team colors are unreliable
+                return True
+            
+            # TIER 1b: Very high victim similarity within longer window (exact name match)
+            if victim_sim > 0.90 and time_diff < display_window_ms:
+                return True
+            
+            # TIER 2: Full match - both killer and victim similar
+            if killer_sim > 0.70 and victim_sim > 0.70:
+                # Don't require strict team match - colors can be misdetected
+                return True
+            
+            # TIER 2b: Moderate similarity on both names within tight window
+            if killer_sim > 0.55 and victim_sim > 0.55 and time_diff < 2500:
+                return True
+            
+            # TIER 3: One name very similar + other moderately similar (OCR variation)
+            if (killer_sim > 0.85 and victim_sim > 0.45 and time_diff < 2500) or \
+               (victim_sim > 0.85 and killer_sim > 0.45 and time_diff < 2500):
+                return True
+            
+            # TIER 4: Check for swapped killer/victim (rare OCR confusion)
+            swap_killer_sim = self._name_similarity(killer_base, sig_victim_base)
+            swap_victim_sim = self._name_similarity(victim_base, sig_killer_base)
+            if swap_killer_sim > 0.70 and swap_victim_sim > 0.70:
+                return True
+                
         return False
 
     def _is_duplicate(self, t_ms: float, sig: Tuple) -> bool:
@@ -3447,7 +3062,9 @@ class KillfeedDetector(BaseDetector):
         teal_mask = cv2.inRange(hsv, 
                                 np.array(TEAM_COLORS["teal"]["lower"]),
                                 np.array(TEAM_COLORS["teal"]["upper"]))
-        orange_mask = _build_orange_mask(hsv)
+        orange_mask = cv2.inRange(hsv,
+                                  np.array(TEAM_COLORS["orange"]["lower"]),
+                                  np.array(TEAM_COLORS["orange"]["upper"]))
         
         color_mask = cv2.bitwise_or(teal_mask, orange_mask)
         
@@ -3510,14 +3127,6 @@ class KillfeedDetector(BaseDetector):
         MIN_COLOR_PIXELS_MINORITY = 50  # The minority color needs at least this many pixels
         MIN_COLOR_DENSITY_EXTENDED = 0.01  # At least 1% of row should be team color
         
-        # Self-kill detection: A single-color row is valid if the colour
-        # appears in TWO separate horizontal blobs (killer bg + victim bg)
-        # with a visible gap in between (the weapon-icon zone).
-        # Relaxed thresholds to catch spike and fall damage icons which may
-        # be narrower than standard weapon icons.
-        SELF_KILL_MIN_SINGLE_COLOR = 150
-        SELF_KILL_MIN_GAP_PX = 10
-        
         # First pass: check ALL rows and determine which have content
         for i in range(KILLFEED_EXTENDED_ROWS):
             y_start = i * row_height
@@ -3531,52 +3140,30 @@ class KillfeedDetector(BaseDetector):
             teal_mask = cv2.inRange(hsv, 
                                     np.array(TEAM_COLORS["teal"]["lower"]),
                                     np.array(TEAM_COLORS["teal"]["upper"]))
-            orange_mask = _build_orange_mask(hsv)
+            orange_mask = cv2.inRange(hsv,
+                                      np.array(TEAM_COLORS["orange"]["lower"]),
+                                      np.array(TEAM_COLORS["orange"]["upper"]))
             
             teal_pixels = cv2.countNonZero(teal_mask)
             orange_pixels = cv2.countNonZero(orange_mask)
-            
-            # ---- DEBUG self-kill window ----
-            _dbg = getattr(self, '_dbg_self', False)
-            if _dbg:
-                print(f"[DBG-SEG] row={i} teal={teal_pixels} orange={orange_pixels} total={total_pixels}")
             
             # Calculate color density (fraction of row covered by team colors)
             color_density = (teal_pixels + orange_pixels) / total_pixels
             row_color_density[i] = color_density
             
-            # Normal kill: BOTH teal and orange present
+            # Must have BOTH teal and orange colors for a valid kill entry
             # (killer name = one color, victim name = other color)
+            # The majority color (larger text area) should have substantial pixels
+            # The minority color should also be meaningful (not just noise)
             majority_pixels = max(teal_pixels, orange_pixels)
             minority_pixels = min(teal_pixels, orange_pixels)
             
-            has_both_colors = (
+            has_sufficient_colors = (
                 majority_pixels > MIN_COLOR_PIXELS_PRIMARY and 
                 minority_pixels > MIN_COLOR_PIXELS_MINORITY
             )
             
-            # Self-kill / fall-damage: Only ONE team colour, but it must
-            # appear in two separate horizontal regions with a gap.
-            has_single_color_two_blobs = False
-            if not has_both_colors and majority_pixels >= SELF_KILL_MIN_SINGLE_COLOR:
-                dominant_mask = teal_mask if teal_pixels >= orange_pixels else orange_mask
-                regions = self._find_color_regions(dominant_mask)
-                if _dbg:
-                    print(f"[DBG-SEG] row={i} self-kill check: regions={len(regions)} bboxes={[(r[0],r[2]) for r in regions]}")
-                if len(regions) >= 2:
-                    regions_sorted = sorted(regions, key=lambda r: r[0])  # sort by x
-                    leftmost = regions_sorted[0]
-                    rightmost = regions_sorted[-1]
-                    gap = rightmost[0] - (leftmost[0] + leftmost[2])  # x2_start - x1_end
-                    if _dbg:
-                        print(f"[DBG-SEG] row={i} gap={gap} (leftmost x={leftmost[0]} w={leftmost[2]}, rightmost x={rightmost[0]})")
-                    if gap >= SELF_KILL_MIN_GAP_PX:
-                        has_single_color_two_blobs = True
-            
-            if _dbg:
-                print(f"[DBG-SEG] row={i} has_both={has_both_colors} has_single_two_blobs={has_single_color_two_blobs} -> {'CONTENT' if has_both_colors or has_single_color_two_blobs else 'EMPTY'}")
-            
-            if has_both_colors or has_single_color_two_blobs:
+            if has_sufficient_colors:
                 rows_with_content.add(i)
         
         # Early exit: if no rows have content, return empty
@@ -3651,67 +3238,18 @@ class KillfeedDetector(BaseDetector):
         
         return rows
 
-    def _ocr_killfeed_row(self, row_img: np.ndarray, row_width: int) -> List[Dict[str, Any]]:
-        """Run OCR on a killfeed row image and return sorted name entries.
-        
-        Returns a list of dicts: [{name, x, x_left, x_right, conf}, ...]
-        sorted by x position (left to right).
-        """
-        scale = 2  # All OCR preprocessing uses 2x scale
-
-        if hasattr(self._ocr_reader, 'read_text_multipass'):
-            multipass_results = self._ocr_reader.read_text_multipass(
-                row_img,
-                min_confidence=0.2,
-                strategies=['contrast']
-            )
-            results = [(r.bbox, r.text, r.confidence) for r in multipass_results]
-        elif hasattr(self._ocr_reader, 'read_text'):
-            scaled = cv2.resize(row_img, None, fx=scale, fy=scale,
-                               interpolation=cv2.INTER_LINEAR)
-            ocr_results = self._ocr_reader.read_text(scaled, min_confidence=0.3)
-            results = [(r.bbox, r.text, r.confidence) for r in ocr_results]
-        else:
-            scaled = cv2.resize(row_img, None, fx=scale, fy=scale,
-                               interpolation=cv2.INTER_LINEAR)
-            results = self._ocr_reader.readtext(scaled, paragraph=False)
-
-        names = []
-        for bbox, text, conf in results:
-            if conf > 0.2 and len(text.strip()) >= 2:
-                if isinstance(bbox, tuple) and len(bbox) == 4:
-                    x_center = (bbox[0] + bbox[2] / 2) / scale
-                    x_left = bbox[0] / scale
-                    x_right = (bbox[0] + bbox[2]) / scale
-                else:
-                    x_center = (bbox[0][0] + bbox[2][0]) / 2 / scale
-                    x_left = min(bbox[0][0], bbox[3][0]) / scale
-                    x_right = max(bbox[1][0], bbox[2][0]) / scale
-                names.append({
-                    "name": text.strip(),
-                    "x": x_center,
-                    "x_left": x_left,
-                    "x_right": x_right,
-                    "conf": conf,
-                })
-
-        names.sort(key=lambda n: n["x"])
-        return names
-
     def _parse_row(self, row_img: np.ndarray) -> Optional[Dict[str, Any]]:
-        """Parse a killfeed row to extract kill information.
-        
-        Handles both normal kills (two different team colours) and
-        self-kills / fall damage (same colour on both sides).
-        """
+        """Parse a killfeed row to extract kill information."""
         h, w = row_img.shape[:2]
         hsv = cv2.cvtColor(row_img, cv2.COLOR_BGR2HSV)
         
-        # Detect team colors (use full orange mask including secondary hue range)
+        # Detect team colors
         teal_mask = cv2.inRange(hsv,
                                 np.array(TEAM_COLORS["teal"]["lower"]),
                                 np.array(TEAM_COLORS["teal"]["upper"]))
-        orange_mask = _build_orange_mask(hsv)
+        orange_mask = cv2.inRange(hsv,
+                                  np.array(TEAM_COLORS["orange"]["lower"]),
+                                  np.array(TEAM_COLORS["orange"]["upper"]))
         
         teal_pixels = cv2.countNonZero(teal_mask)
         orange_pixels = cv2.countNonZero(orange_mask)
@@ -3736,32 +3274,68 @@ class KillfeedDetector(BaseDetector):
             return None
         
         # In killfeed: leftmost color = killer team, rightmost = victim team
-        # For self-kills (fall damage), both sides are the same colour.
         killer_team = all_regions[0]["color"]
         victim_team = all_regions[-1]["color"]
         
-        # Detect same-colour layout (self-kill / fall damage / spike)
-        is_same_color = (killer_team == victim_team)
-
         # Try OCR for names
         killer_name = "Unknown"
         victim_name = "Unknown"
-        names = []  # Will be populated by OCR; needed later for text boundaries
         
         self._init_ocr()
         if self._ocr_reader:
             try:
-                # Same OCR strategy for all rows (including self-kills).
-                # Self-kill rows look identical to normal kills in the killfeed:
-                #   [killer_name] [icon] [victim_name]
-                # with the same player on both sides and both backgrounds the same colour.
-                names = self._ocr_killfeed_row(row_img, w)
-
+                # SPEED OPTIMIZATION: Single-pass OCR with contrast only (fastest)
+                if hasattr(self._ocr_reader, 'read_text_multipass'):
+                    # Single-pass OCR - contrast only for speed
+                    multipass_results = self._ocr_reader.read_text_multipass(
+                        row_img, 
+                        min_confidence=0.2,
+                        strategies=['contrast']  # Single pass for speed
+                    )
+                    # Convert to standard format (results already scaled by preprocessing)
+                    # The preprocessing scales 1.5x now (reduced from 3x for speed)
+                    scale = 1.5  # Matches new preprocessing scale
+                    results = []
+                    for r in multipass_results:
+                        # x position needs to be divided by scale since preprocessing enlarged the image
+                        results.append((r.bbox, r.text, r.confidence))
+                elif hasattr(self._ocr_reader, 'read_text'):
+                    # Single-pass OCR engine
+                    scale = 2
+                    scaled = cv2.resize(row_img, None, fx=scale, fy=scale, 
+                                       interpolation=cv2.INTER_LINEAR)
+                    ocr_results = self._ocr_reader.read_text(scaled, min_confidence=0.3)
+                    results = [(r.bbox, r.text, r.confidence) for r in ocr_results]
+                else:
+                    # Legacy EasyOCR direct usage
+                    scale = 2
+                    scaled = cv2.resize(row_img, None, fx=scale, fy=scale, 
+                                       interpolation=cv2.INTER_LINEAR)
+                    results = self._ocr_reader.readtext(scaled, paragraph=False)
+                
+                names = []
+                for bbox, text, conf in results:
+                    if conf > 0.2 and len(text.strip()) >= 2:
+                        # Handle both tuple bbox (new) and list bbox (legacy)
+                        if isinstance(bbox, tuple) and len(bbox) == 4:
+                            x_center = (bbox[0] + bbox[2] / 2) / scale
+                        else:
+                            x_center = (bbox[0][0] + bbox[2][0]) / 2 / scale
+                        raw_name = text.strip()
+                        
+                        # NOTE: Don't do early fuzzy matching here - let _detect() handle it
+                        # with proper team codes to avoid matching players to wrong teams
+                        # (e.g., matching 'doma' garbage to a player not in this match)
+                        
+                        names.append({"name": raw_name, "x": x_center, "conf": conf})
+                
+                names.sort(key=lambda n: n["x"])
+                
                 if len(names) >= 2:
                     killer_name = names[0]["name"]
                     victim_name = names[-1]["name"]
                 elif len(names) == 1:
-                    # Only 1 name found - assign based on position
+                    # Single name - determine position
                     if names[0]["x"] < w / 2:
                         killer_name = names[0]["name"]
                     else:
@@ -3806,42 +3380,6 @@ class KillfeedDetector(BaseDetector):
         # The _get_team_name_from_color() function handles halftime/overtime color swaps
         # when building the summary/timeline. Do NOT swap colors here to avoid double-swapping.
         
-        # Compute text boundaries for weapon icon extraction
-        # killer_text_right = right edge of killer (leftmost) text bbox
-        # victim_text_left = left edge of victim (rightmost) text bbox
-        # Since names is sorted by x, names[0] is killer and names[-1] is victim.
-        #
-        # Filter out spurious OCR detections near row edges (agent icons can
-        # produce short text fragments that shift the boundary assignment).
-        # Only consider OCR results whose center is within 10%-90% of the row.
-        killer_text_right = None
-        victim_text_left = None
-        if len(names) >= 2:
-            inner_names = [n for n in names if w * 0.10 < n["x"] < w * 0.90]
-            if len(inner_names) >= 2:
-                killer_text_right = inner_names[0].get("x_right")
-                victim_text_left = inner_names[-1].get("x_left")
-                # Cap killer bbox width: PaddleOCR sometimes merges the
-                # ability icon / weapon pixels into the killer name bbox,
-                # inflating x_right far beyond the actual text.  Normal
-                # killer name bboxes are 60-100px wide; the longest
-                # name ("ENVY Eggsterr") reaches ~108px.  Cap at 100.
-                ktr_xl = inner_names[0].get("x_left", 0)
-                ktr_w = killer_text_right - ktr_xl
-                MAX_NAME_W = 100
-                if ktr_w > MAX_NAME_W:
-                    killer_text_right = ktr_xl + MAX_NAME_W
-            else:
-                # Fall back to unfiltered if filtering removed too many
-                killer_text_right = names[0].get("x_right")
-                victim_text_left = names[-1].get("x_left")
-            # Log all OCR boxes so we can see when PaddleOCR merges
-            # weapon/icon pixels into a name bbox
-            crop_num = getattr(self, '_crop_counter', 0)
-            used = inner_names if len(inner_names) >= 2 else names
-            for i, n in enumerate(used):
-                print(f"[OCR-BOX] crop#{crop_num} box{i}: '{n['name']}' xL={n['x_left']:.0f} xR={n['x_right']:.0f} w={n['x_right']-n['x_left']:.0f} conf={n['conf']:.2f}", flush=True)
-        
         return {
             "killer_name": killer_name,
             "killer_team": killer_team,  # Raw color: teal or orange
@@ -3854,9 +3392,6 @@ class KillfeedDetector(BaseDetector):
             "weapon_icon": None,
             "is_headshot": False,
             "confidence": 0.7 if killer_name != "Unknown" and victim_name != "Unknown" else 0.4,
-            # Text boundaries for weapon icon extraction (pixel coords in row_img)
-            "killer_text_right": killer_text_right,
-            "victim_text_left": victim_text_left,
         }
 
     def set_weapon_classifier(self, classifier: object):
@@ -3905,581 +3440,166 @@ class KillfeedDetector(BaseDetector):
 
         return "unknown"
 
-    def _extract_weapon_icon(self, row_img: np.ndarray, killer_text_right: float = None, victim_text_left: float = None) -> Optional[np.ndarray]:
+    def _extract_weapon_icon(self, row_img: np.ndarray) -> Optional[np.ndarray]:
         """
         Extract the weapon/ability icon from a killfeed row image.
 
         Killfeed row structure:
           [Agent] [Killer Name on colored bg] [WEAPON ICON] [arrow] [Victim on colored bg] [Agent]
 
-        Priority order:
-        1. OCR + bright-pixel refinement (search zone around OCR gap)
-        2. Threshold-based contour detection (center zone, bright pixels)
-        3. OCR trim fallback (raw OCR gap with inward trim)
-        4. Center fallback (conservative center crop)
+        Strategy — **hue-transition detection**:
+        Even in faded killfeed rows the *hue* of each team colour is clearly
+        identifiable (orange H≈11-19, teal H≈85-110) even at very low
+        saturation.  Rather than trying to threshold saturation to separate
+        the icon from the name background, we:
+
+        1. Classify every pixel's hue as orange-family, teal-family, or
+           neutral (ignoring near-grey / near-black pixels).
+        2. For each column compute the fraction of orange vs teal pixels and
+           derive a smoothed *dominance* signal (positive = orange, negative
+           = teal).
+        3. Find zero-crossings of the dominance signal.  The crossing
+           with the largest dominance-swing magnitude is the weapon-icon
+           location (portrait→name edges are weak; name→name is strong).
+        4. From that crossing, expand outward until we re-enter a solid
+           team-colour background on each side.
+        5. Enforce min/max crop width and return the crop at full row height.
         """
         try:
             h, w = row_img.shape[:2]
             if w < 60 or h < 10:
                 return None
 
-            # Track actual crop bounds for diagnostic overlay
-            self._last_crop_bounds = None
-            self._last_search_zone = None
-            self._last_crop_method = None
+            hsv = cv2.cvtColor(row_img, cv2.COLOR_BGR2HSV)
+            H_ch = hsv[:, :, 0]  # shape (h, w)
+            S_ch = hsv[:, :, 1]
+            V_ch = hsv[:, :, 2]
 
-            MIN_CROP_W = max(38, h)  # minimum crop width = row height or 38px
-            crop_num = getattr(self, '_crop_counter', 0)
+            # ── Step 1: Per-column hue classification (vectorised) ──
+            # Only consider pixels with a minimum saturation and brightness
+            # so that near-grey text / shadow pixels don't pollute the vote.
+            MIN_SAT = 15
+            MIN_VAL = 40
+            valid = (S_ch >= MIN_SAT) & (V_ch >= MIN_VAL)
+            n_valid = valid.sum(axis=0).astype(np.float64)
+            n_valid_safe = np.maximum(n_valid, 1.0)
 
-            # ── Strategy 1: OCR + bright-pixel refinement ──
-            if killer_text_right is None or victim_text_left is None:
-                ktr_s = f"{killer_text_right:.1f}" if killer_text_right is not None else "None"
-                vtl_s = f"{victim_text_left:.1f}" if victim_text_left is not None else "None"
-                print(f"[CROP-DBG] crop#{crop_num} SKIP Strategy1: kR={ktr_s} vL={vtl_s} (missing OCR bounds)")
-            if killer_text_right is not None and victim_text_left is not None:
-                left_bound = int(round(killer_text_right))
-                right_bound = int(round(victim_text_left))
-                gap = right_bound - left_bound
+            # Orange hue family: H in [0, 30] or [150, 180]
+            orange_px = valid & ((H_ch <= 30) | (H_ch >= 150))
+            orange_frac = orange_px.sum(axis=0).astype(np.float64) / n_valid_safe
 
-                # ── Position sanity check ──
-                # Real killfeed rows sit on the right side of the
-                # screen.  kR < 30% of row width indicates the OCR
-                # read text from a non-killfeed element (e.g. replay
-                # economy overlay, character splash screen).
-                if left_bound < w * 0.30:
-                    print(f"[CROP-DBG] crop#{crop_num} SKIP: kR={left_bound} < {w*0.30:.0f} (position too far left)")
-                    return None
+            # Teal/cyan hue family: H in [70, 120]
+            teal_px = valid & (H_ch >= 70) & (H_ch <= 120)
+            teal_frac = teal_px.sum(axis=0).astype(np.float64) / n_valid_safe
 
-                # ── Ability icon detection ──
-                # Ability icons are small squares (~h×h px).  When
-                # PaddleOCR merges the icon into the killer name bbox
-                # the gap shrinks to < h+15.  Use a vL-anchored crop
-                # instead of the normal Strategy 1 pipeline which
-                # would pick up the killer agent icon.
-                if 0 < gap < h + 15:
-                    icon_w = int(h * 1.05)
-                    # Pull right edge inward — the ability icon sits
-                    # a few px left of vL, not flush against it.
-                    icon_x1 = right_bound - 4
-                    icon_x0 = max(0, icon_x1 - icon_w)
-                    pad_l = max(4, int(h * 0.10))
-                    pad_r = 1
-                    x0 = max(0, icon_x0 - pad_l)
-                    x1 = min(w, icon_x1 + pad_r)
-                    if (x1 - x0) < MIN_CROP_W:
-                        mid = (x0 + x1) // 2
-                        x0 = max(0, mid - MIN_CROP_W // 2)
-                        x1 = min(w, x0 + MIN_CROP_W)
-                    self._last_crop_bounds = (x0, x1)
-                    self._last_crop_method = "ocr_hybrid"
-                    print(f"[CROP-DBG] crop#{crop_num} ability-icon crop (gap={gap}): x0={x0} x1={x1} w={x1-x0}")
-                    icon = row_img[0:h, x0:x1]
-                    if icon.size > 0:
-                        return icon
+            # Zero-out columns with too few valid pixels
+            low_valid = n_valid < max(2, h * 0.2)
+            orange_frac[low_valid] = 0.0
+            teal_frac[low_valid] = 0.0
 
-                # ── ktr color-boundary correction ──
-                # PaddleOCR sometimes merges a small ability icon into
-                # the killer name bbox, pushing ktr too far right.
-                # Detect this by checking if ktr pixels are team-colored;
-                # if not, scan leftward to find where team color ends.
-                # Only attempt when gap is non-trivial (>= 20px).
-                ktr_skip_bright = False  # Fix 11: track when weapon icon sits at kR
-                if gap >= 20:
-                    hsv_row = cv2.cvtColor(row_img, cv2.COLOR_BGR2HSV)
-                    teal_m = cv2.inRange(hsv_row, np.array([75, 50, 80]), np.array([115, 255, 255]))
-                    red_m1 = cv2.inRange(hsv_row, np.array([0, 80, 100]), np.array([15, 255, 255]))
-                    red_m2 = cv2.inRange(hsv_row, np.array([165, 80, 100]), np.array([179, 255, 255]))
-                    team_color_mask = cv2.bitwise_or(teal_m, cv2.bitwise_or(red_m1, red_m2))
-                    strip_x0 = max(0, left_bound - 1)
-                    strip_x1 = min(w, left_bound + 2)
-                    strip = team_color_mask[:, strip_x0:strip_x1]
-                    color_frac = np.count_nonzero(strip) / max(1, strip.size)
-                    # Brightness/saturation pre-check: if kR pixels are bright
-                    # and unsaturated, they belong to a weapon icon (white/gray),
-                    # not a gap between name and icon.  Skip ktr correction to
-                    # avoid scanning left through the entire weapon icon.
-                    hsv_strip = hsv_row[:, strip_x0:strip_x1]
-                    med_v = float(np.median(hsv_strip[:, :, 2]))
-                    med_s = float(np.median(hsv_strip[:, :, 1]))
-                    bright_unsaturated = (med_v > 170 and med_s < 60)
-                    if bright_unsaturated:
-                        ktr_skip_bright = True
-                        print(f"[CROP-DBG] crop#{crop_num} ktr skip correction: bright weapon icon at kR (V={med_v:.0f} S={med_s:.0f})")
-                    elif color_frac < 0.45:
-                        # Cap correction distance: large corrections
-                        # land on same-color text from different rows.
-                        max_correction = max(50, int(gap * 0.40))
-                        scan_limit = max(int(w * 0.10), left_bound - max_correction)
-                        original_left_bound = left_bound
-                        new_ktr = left_bound
-                        for sx in range(left_bound - 1, scan_limit - 1, -1):
-                            col_strip = team_color_mask[:, sx:sx+1]
-                            if np.count_nonzero(col_strip) / max(1, col_strip.size) >= 0.35:
-                                new_ktr = sx + 1
-                                break
-                        if new_ktr < left_bound:
-                            left_bound = new_ktr
-                            gap = right_bound - left_bound
-                            # Guard: if correction made gap too large, the
-                            # scan hit team color from a different element
-                            # (e.g. agent icon, different row). Revert.
-                            if gap > w * 0.38:
-                                print(f"[CROP-DBG] crop#{crop_num} ktr correction {original_left_bound} -> {new_ktr} REVERTED (gap={gap} > {w*0.38:.0f})")
-                                left_bound = original_left_bound
-                                gap = right_bound - left_bound
-                            else:
-                                print(f"[CROP-DBG] crop#{crop_num} ktr corrected {original_left_bound} -> {new_ktr} (color boundary)")
-                    elif gap < 50:
-                        # Team color extends through the weapon/ability
-                        # icon area (same bg as killer name).  Color scan
-                        # cannot find a boundary, so push ktr left by a
-                        # fixed amount to give Strategy 1 a wider zone.
-                        original_left_bound = left_bound
-                        push = max(120, int(w * 0.20))
-                        left_bound = max(int(w * 0.10), left_bound - push)
-                        gap = right_bound - left_bound
-                        print(f"[CROP-DBG] crop#{crop_num} ktr merged-icon push {original_left_bound} -> {left_bound} (gap={gap}, team-color extends through icon)")
-                else:
-                    hsv_row = None
+            # ── Step 2: Smoothed dominance signal ──
+            ks = max(5, int(w * 0.025) | 1)  # ~15 px at w=585, ensure odd
+            kernel = np.ones(ks) / ks
+            orange_sm = np.convolve(orange_frac, kernel, mode='same')
+            teal_sm = np.convolve(teal_frac, kernel, mode='same')
 
-                print(f"[CROP-DBG] crop#{crop_num} OCR: kR={killer_text_right:.1f} vL={victim_text_left:.1f} gap={gap} w={w}")
+            # dominance > 0 → orange, < 0 → teal
+            dominance = orange_sm - teal_sm
 
-                if gap >= 30 and gap <= w * 0.38:
-                    # Expand search zone generously left to catch icons
-                    # absorbed into the killer name bbox
-                    pass  # gap in range — proceed with Strategy 1
-                elif gap < 30:
-                    print(f"[CROP-DBG] crop#{crop_num} SKIP Strategy1: gap={gap} < 30")
-                else:
-                    print(f"[CROP-DBG] crop#{crop_num} SKIP Strategy1: gap={gap} > {w*0.38:.0f} (w*0.38)")
+            # ── Step 3: Find zero-crossings (hue transitions) ──
+            crossings: list[int] = []
+            for x in range(1, w):
+                if dominance[x - 1] * dominance[x] < 0:
+                    crossings.append(x)
+                elif dominance[x - 1] != 0 and dominance[x] == 0:
+                    crossings.append(x)
 
-                if gap >= 30 and gap <= w * 0.38:
-                    expand_right = max(10, int(gap * 0.10))
-                    # For very large gaps the gun sits fully inside
-                    # kR..vL — don't search left of kR to avoid
-                    # killer-name text on bright/yellow backgrounds.
-                    if gap > 140:
-                        search_x0 = max(int(w * 0.12), left_bound)
-                    else:
-                        # Fix 13: increase left expansion to catch weapon
-                        # handles/stocks that extend well left of kR.
-                        expand_left = max(25, int(gap * 0.45))
-                        search_x0 = max(int(w * 0.12), left_bound - expand_left)
-                    search_x1 = min(int(w * 0.85), right_bound + expand_right)
-                    self._last_search_zone = (search_x0, search_x1)
+            if not crossings:
+                # No hue transition – same-team kill or heavily faded row
+                return self._center_fallback_crop(row_img)
 
-                    if hsv_row is None:
-                        hsv_row = cv2.cvtColor(row_img, cv2.COLOR_BGR2HSV)
+            # Pick the crossing with the LARGEST dominance swing.
+            # The weapon icon sits between two team-colored name backgrounds
+            # (team A → team B), producing the biggest sign change.  Portrait
+            # edges are weak (neutral → colored).
+            SWING_WINDOW = max(10, int(w * 0.06))  # ~35 px each side
+            best_cross = None
+            best_swing = -1.0
+            for cr in crossings:
+                # Reject crossings in the outer 15% (portrait area)
+                if cr < w * 0.15 or cr > w * 0.85:
+                    continue
+                left_avg = float(np.mean(dominance[max(0, cr - SWING_WINDOW):cr]))
+                right_avg = float(np.mean(dominance[cr:min(w, cr + SWING_WINDOW)]))
+                swing = abs(right_avg - left_avg)
+                if swing > best_swing:
+                    best_swing = swing
+                    best_cross = cr
 
-                    # Grayscale threshold within the OCR search zone.
-                    # Mask out high-saturation pixels first — on yellow /
-                    # team-colored backgrounds, bright background pixels
-                    # pass the gray>180 threshold and create giant
-                    # contours.  Icon pixels are white/gray (low sat).
-                    gray = cv2.cvtColor(row_img, cv2.COLOR_BGR2GRAY)
-                    _, thresh = cv2.threshold(
-                        gray, 180, 255, cv2.THRESH_BINARY)
-                    if hsv_row is None:
-                        hsv_row = cv2.cvtColor(row_img, cv2.COLOR_BGR2HSV)
-                    sat_mask = cv2.inRange(hsv_row[:, :, 1], 0, 90)
-                    thresh = cv2.bitwise_and(thresh, sat_mask)
-                    # Restrict to search zone
-                    zone_mask = np.zeros_like(thresh)
-                    zone_mask[0:h, search_x0:search_x1] = 255
-                    thresh = cv2.bitwise_and(thresh, zone_mask)
+            if best_cross is None:
+                return self._center_fallback_crop(row_img)
 
-                    contours_bp, _ = cv2.findContours(
-                        thresh, cv2.RETR_EXTERNAL,
-                        cv2.CHAIN_APPROX_SIMPLE,
-                    )
+            # ── Step 4: Find the left edge of the weapon icon ──
+            # The weapon icon sits LEFT of the crossing.  Its pixels may
+            # share the killer’s team hue (e.g. teal), so we can’t use
+            # colour alone.  Instead, use the **valid pixel ratio** per
+            # column: under the killer’s white text, many pixels have very
+            # low saturation (S < MIN_SAT) and are filtered out, causing a
+            # drop in the fraction of “valid” (coloured) pixels.  After
+            # the text ends (weapon icon area), nearly all pixels are valid.
+            # Walking left from the crossing, the first sustained drop in
+            # valid_ratio marks where the name text begins.
+            right_bound = best_cross
 
-                    min_cnt_area = h * 2
-                    bp_valid = []
-                    for cnt in contours_bp:
-                        area = cv2.contourArea(cnt)
-                        if area >= min_cnt_area:
-                            bx, by, bw, bh = cv2.boundingRect(cnt)
-                            bp_valid.append((bx, by, bw, bh, area))
+            valid_ratio = n_valid / max(1.0, float(h))
+            valid_sm = np.convolve(valid_ratio, kernel, mode='same')
 
-                    n_contours_total = len(bp_valid)
-                    # Filter contours near the victim text — the headshot
-                    # icon sits just left of vL and its contours must be
-                    # excluded or they merge with the weapon cluster.
-                    hs_margin = max(20, int(gap * 0.20))
-                    if bp_valid:
-                        bp_valid = [c for c in bp_valid
-                                    if (c[0] + c[2] // 2) <= right_bound - hs_margin]
-                    n_after_right = len(bp_valid)
+            VALID_THRESH = 0.70  # text area drops below this
+            MIN_ICON_COLS = 3    # must pass through icon before looking
 
-                    # Also filter contours whose center is to the LEFT of
-                    # left_bound (these are likely killer-name text pixels).
-                    # Gap-dependent: for small gaps (<100) the gun fills
-                    # most of the gap and extends left of kR, so be loose.
-                    # For large gaps (>120) text leaks in, so be tight.
-                    # Fix 13: align with search zone expansion.
-                    if gap <= 140:
-                        left_filter_x = left_bound - max(20, int(gap * 0.35))
-                    else:
-                        left_filter_x = left_bound - max(5, int(gap * 0.04))
-                    if bp_valid:
-                        bp_valid = [c for c in bp_valid
-                                    if (c[0] + c[2] // 2) >= left_filter_x]
-                    n_after_left = len(bp_valid)
+            left_bound = max(0, best_cross - 100)  # fallback: typical icon zone
+            icon_cols = 0
+            for x in range(best_cross - 1, max(0, int(w * 0.08)) - 1, -1):
+                if valid_sm[x] >= VALID_THRESH:
+                    icon_cols += 1
+                if icon_cols >= MIN_ICON_COLS and valid_sm[x] < VALID_THRESH:
+                    left_bound = x
+                    break
 
-                    if not bp_valid:
-                        print(f"[CROP-DBG] crop#{crop_num} Strategy1 brightness: contours {n_contours_total}->right_filt {n_after_right}->left_filt {n_after_left}")
-                        # Fallback: saturation-based detection.
-                        # On team-colored backgrounds the icon is
-                        # low-saturation (white/gray) while the bg is
-                        # high-saturation.  Threshold on inverted sat.
-                        if hsv_row is None:
-                            hsv_row = cv2.cvtColor(row_img, cv2.COLOR_BGR2HSV)
-                        sat_ch = hsv_row[:, :, 1]
-                        # Low saturation = text / icon pixels
-                        _, sat_thresh = cv2.threshold(sat_ch, 70, 255, cv2.THRESH_BINARY_INV)
-                        sat_thresh = cv2.bitwise_and(sat_thresh, zone_mask)
-                        contours_sat, _ = cv2.findContours(
-                            sat_thresh, cv2.RETR_EXTERNAL,
-                            cv2.CHAIN_APPROX_SIMPLE)
-                        for cnt in contours_sat:
-                            area = cv2.contourArea(cnt)
-                            if area >= min_cnt_area:
-                                bx, by, bw, bh = cv2.boundingRect(cnt)
-                                bp_valid.append((bx, by, bw, bh, area))
-                        # Re-apply same right/left filters
-                        if bp_valid:
-                            bp_valid = [c for c in bp_valid
-                                        if (c[0] + c[2] // 2) <= right_bound - hs_margin]
-                        if bp_valid:
-                            bp_valid = [c for c in bp_valid
-                                        if (c[0] + c[2] // 2) >= left_filter_x]
-                        if bp_valid:
-                            print(f"[CROP-DBG] crop#{crop_num} saturation fallback found {len(bp_valid)} contours")
-                        else:
-                            print(f"[CROP-DBG] crop#{crop_num} SKIP Strategy1: no contours (brightness or saturation)")
+            # ── Step 5: Enforce min/max width and crop ──
+            crop_w = right_bound - left_bound
+            MIN_CROP = 80
+            MAX_CROP = int(w * 0.40)
 
-                    if bp_valid:
-                        gap_mid = (left_bound + right_bound) / 2
-                        # Prefer contours near the LEFT side of the gap
-                        # (weapon icon) over the right (headshot icon).
-                        weapon_anchor = left_bound + gap * 0.35
-                        def _score(c):
-                            cx = c[0] + c[2] / 2
-                            return (abs(cx - weapon_anchor), -c[4])
-                        bp_valid.sort(key=_score)
-                        best = bp_valid[0]
-                        icon_x0 = best[0]
-                        icon_x1 = best[0] + best[2]
+            if crop_w < MIN_CROP:
+                # Expand leftward from crossing to reach minimum width
+                left_bound = max(0, right_bound - MIN_CROP)
+            elif crop_w > MAX_CROP:
+                left_bound = max(0, right_bound - MAX_CROP)
 
-                        cluster_gap = max(12, int(h * 0.40))
-                        MAX_ICON_W = min(140, max(int(gap * 0.75), 80))
-                        for c in bp_valid[1:]:
-                            c_x0, c_x1 = c[0], c[0] + c[2]
-                            if (c_x0 <= icon_x1 + cluster_gap and
-                                    c_x1 >= icon_x0 - cluster_gap):
-                                new_x0 = min(icon_x0, c_x0)
-                                new_x1 = max(icon_x1, c_x1)
-                                if (new_x1 - new_x0) > MAX_ICON_W:
-                                    continue  # Skip: would make cluster too wide
-                                icon_x0 = new_x0
-                                icon_x1 = new_x1
+            # Small padding
+            pad = max(2, int((right_bound - left_bound) * 0.06))
+            x0 = max(0, left_bound - pad)
+            x1 = min(w, right_bound + pad)
 
-                        # Clamp to OCR boundaries — slightly generous
-                        # on the left (weapons extend left of ktr) and
-                        # allow a small right overshoot (gun barrels can
-                        # extend past vL).  The hs_margin filter already
-                        # excluded headshot-icon contours from the cluster.
-                        # Left margin: generous for small gaps (gun
-                        # extends left), tight for large gaps (text leak).
-                        # Fix 13: align with search zone expansion.
-                        if gap <= 140:
-                            left_margin = max(20, int(gap * 0.30))
-                        else:
-                            left_margin = max(8, int(gap * 0.10))
-                        right_margin = max(15, int(gap * 0.20))
-                        icon_x0 = max(icon_x0, left_bound - left_margin)
-                        icon_x1 = min(icon_x1, right_bound + right_margin)
-
-                        # Headshot guard: prevent crop from extending
-                        # into the headshot-icon zone near vL.  The
-                        # hs_margin filtered contour *centers*, but a
-                        # contour edge can still reach into hs territory.
-                        hs_right_limit = right_bound - max(18, int(gap * 0.15))
-                        if icon_x1 > hs_right_limit:
-                            icon_x1 = hs_right_limit
-
-                        # If the icon cluster is still wider than
-                        # MAX_ICON_W (e.g. a single giant contour that
-                        # merged weapon + headshot), trim from the right.
-                        if (icon_x1 - icon_x0) > MAX_ICON_W:
-                            icon_x1 = icon_x0 + MAX_ICON_W
-
-                        pad = max(4, int(h * 0.15))
-                        x0 = max(0, icon_x0 - pad)
-                        x1 = min(w, icon_x1 + pad)
-
-                        # Killer-text guard: prevent crop from extending
-                        # into killer name text left of kR.
-                        # Fix 13: cluster-aware guard.  When contour
-                        # detection found a genuine icon cluster starting
-                        # left of kR, trust the contours — they are weapon
-                        # pixels, not killer text.  Allow up to gap*0.35
-                        # left of kR (capped at the contour extent + pad).
-                        # When ktr_skip_bright also fired, allow even more
-                        # (gap*0.45).  For clusters entirely right of kR,
-                        # keep the tight 4px guard.
-                        original_kR = int(round(killer_text_right))
-                        icon_extends_left = icon_x0 < original_kR
-                        if icon_extends_left and ktr_skip_bright:
-                            guard_margin = max(25, int(gap * 0.45))
-                        elif icon_extends_left:
-                            guard_margin = max(20, int(gap * 0.35))
-                        else:
-                            guard_margin = 4
-                        if x0 < original_kR - guard_margin:
-                            print(f"[CROP-DBG] crop#{crop_num} left-clamp x0={x0} -> {original_kR - guard_margin} (killer text guard, kR={original_kR}, margin={guard_margin})")
-                            x0 = original_kR - guard_margin
-
-                        # Re-apply headshot guard after padding
-                        if x1 > hs_right_limit + 2:
-                            x1 = hs_right_limit + 2
-
-                        if (x1 - x0) < MIN_CROP_W:
-                            mid = (x0 + x1) // 2
-                            x0 = max(0, mid - MIN_CROP_W // 2)
-                            x1 = min(w, x0 + MIN_CROP_W)
-
-                        self._last_crop_bounds = (x0, x1)
-                        self._last_crop_method = "ocr_hybrid"
-                        print(f"[CROP-DBG] crop#{crop_num} -> OCR+hybrid x0={x0} x1={x1} w={x1-x0} (icon {icon_x0}-{icon_x1})")
-                        icon = row_img[0:h, x0:x1]
-                        if icon.size > 0:
-                            return icon
-
-                    # ── Strategy 2: OCR trim fallback ──
-                    inward_pct = 0.06
-                    x0 = max(0, left_bound + int(gap * inward_pct))
-                    x1 = min(w, right_bound - int(gap * inward_pct))
-                    if (x1 - x0) < MIN_CROP_W:
-                        mid = (x0 + x1) // 2
-                        x0 = max(0, mid - MIN_CROP_W // 2)
-                        x1 = min(w, x0 + MIN_CROP_W)
-                    self._last_crop_bounds = (x0, x1)
-                    self._last_crop_method = "ocr_trim"
-                    print(f"[CROP-DBG] crop#{crop_num} -> OCR trim fallback x0={x0} x1={x1} w={x1-x0}")
-                    icon = row_img[0:h, x0:x1]
-                    if icon.size > 0:
-                        return icon
-
-            # ── Strategy 3: Threshold-based contour detection ──
-            gray = cv2.cvtColor(row_img, cv2.COLOR_BGR2GRAY)
-            _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
-            contours_th, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-            if contours_th:
-                center_zone_left = int(w * 0.18)
-                center_zone_right = int(w * 0.82)
-                min_area = h * 3
-
-                valid_contours = []
-                for cnt in contours_th:
-                    bx, by, bw, bh = cv2.boundingRect(cnt)
-                    cx = bx + bw // 2
-                    area = cv2.contourArea(cnt)
-                    if center_zone_left <= cx <= center_zone_right and area >= min_area:
-                        valid_contours.append((bx, by, bw, bh, area))
-
-                if valid_contours:
-                    all_left = min(c[0] for c in valid_contours)
-                    all_right = max(c[0] + c[2] for c in valid_contours)
-
-                    pad = max(4, int(h * 0.15))
-                    x0 = max(0, all_left - pad)
-                    x1 = min(w, all_right + pad)
-
-                    crop_w = x1 - x0
-                    MAX_CROP = int(w * 0.30)
-
-                    if crop_w < MIN_CROP_W:
-                        mid = (x0 + x1) // 2
-                        x0 = max(0, mid - MIN_CROP_W // 2)
-                        x1 = min(w, x0 + MIN_CROP_W)
-                    elif crop_w > MAX_CROP:
-                        valid_contours.sort(key=lambda c: c[4], reverse=True)
-                        bx, by, bw, bh, _ = valid_contours[0]
-                        x0 = max(0, bx - pad)
-                        x1 = min(w, bx + bw + pad)
-                        if (x1 - x0) < MIN_CROP_W:
-                            mid = (x0 + x1) // 2
-                            x0 = max(0, mid - MIN_CROP_W // 2)
-                            x1 = min(w, x0 + MIN_CROP_W)
-
-                    self._last_crop_bounds = (x0, x1)
-                    self._last_crop_method = "threshold"
-                    print(f"[CROP-DBG] crop#{crop_num} -> threshold x0={x0} x1={x1} w={x1-x0}")
-                    icon = row_img[0:h, x0:x1]
-                    if icon.size > 0:
-                        return icon
-
-            # ── Strategy 4: Center fallback ──
-            self._last_crop_method = "center"
-            print(f"[CROP-DBG] crop#{crop_num} -> center fallback")
-            return self._center_fallback_crop(row_img)
+            icon = row_img[0:h, x0:x1]
+            if icon.size == 0:
+                return None
+            return icon
 
         except Exception:
             return None
+
 
     def _center_fallback_crop(self, row_img: np.ndarray) -> Optional[np.ndarray]:
         """Fallback: return a conservative center crop when gap detection fails."""
         h, w = row_img.shape[:2]
-        crop_w = int(min(80, max(h, w * 0.15)))  # at least row height
+        crop_w = int(min(80, max(32, w * 0.15)))
         cx = w // 2
         x0 = max(0, cx - crop_w // 2)
         x1 = min(w, x0 + crop_w)
-        self._last_crop_bounds = (x0, x1)
         icon = row_img[0:h, x0:x1]
         return icon if icon.size > 0 else None
-
-    def _maybe_extract_ult_badge(
-        self,
-        row_img: np.ndarray,
-        gap_left: float,
-        gap_right: float,
-    ) -> Optional[np.ndarray]:
-        """Detect and extract an ultimate ability badge.
-
-        Analyses the region between gap_left (typically the weapon icon's
-        right edge) and gap_right (victim_text_left or an estimate).
-        If the victim team colour covers >= 11 % of this region, an ult
-        badge is present.  Crops from the first victim-colour column to
-        gap_right.
-        """
-        self._last_ult_badge_bounds = None  # reset each call
-        try:
-            h, w = row_img.shape[:2]
-            gap_x0 = int(round(gap_left))
-            gap_x1 = int(round(gap_right))
-            gap = gap_x1 - gap_x0
-            if gap < 40 or h < 10:
-                return None
-
-            # Trim bottom to avoid background bleed diluting colours
-            trim_bot = max(3, int(h * 0.20))
-            gap_region = row_img[0:h - trim_bot, gap_x0:gap_x1]
-            gh, gw = gap_region.shape[:2]
-            if gh < 4 or gw < 20:
-                return None
-
-            hsv = cv2.cvtColor(gap_region, cv2.COLOR_BGR2HSV)
-
-            # Detect teal pixels
-            teal_mask = cv2.inRange(
-                hsv,
-                np.array([75, 50, 80]),
-                np.array([115, 255, 255]),
-            )
-            # Detect red/orange pixels — two hue ranges
-            red_mask1 = cv2.inRange(
-                hsv,
-                np.array([0, 120, 140]),
-                np.array([10, 255, 255]),
-            )
-            red_mask2 = cv2.inRange(
-                hsv,
-                np.array([170, 120, 140]),
-                np.array([179, 255, 255]),
-            )
-            red_mask = cv2.bitwise_or(red_mask1, red_mask2)
-
-            total_pixels = gh * gw
-            teal_pct = cv2.countNonZero(teal_mask) / total_pixels
-            red_pct = cv2.countNonZero(red_mask) / total_pixels
-
-            # Determine killer colour (dominant) and victim colour (minority).
-            # Normal crops: only the killer colour appears.  With an ult badge
-            # the victim colour also shows up at >= 20 %.
-            if teal_pct >= red_pct:
-                killer_pct, victim_pct = teal_pct, red_pct
-                victim_mask = red_mask
-            else:
-                killer_pct, victim_pct = red_pct, teal_pct
-                victim_mask = teal_mask
-
-            # Collect diagnostics for offline analysis
-            contours_v, _ = cv2.findContours(
-                victim_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-            )
-            largest_area = max(cv2.contourArea(c) for c in contours_v) if contours_v else 0
-
-            # Brightness check: real ult badges have a visible weapon icon
-            # (bright/white pixels) alongside the victim color.  False
-            # positives are just team-colored background with little brightness.
-            gray_gap = cv2.cvtColor(gap_region, cv2.COLOR_BGR2GRAY)
-            _, bright_mask = cv2.threshold(gray_gap, 180, 255, cv2.THRESH_BINARY)
-            bright_pct = cv2.countNonZero(bright_mask) / total_pixels
-
-            crop_num = getattr(self, '_crop_counter', 0)
-            self._ult_diagnostics.append({
-                "crop": crop_num + 1,
-                "gap_x0": gap_x0, "gap_x1": gap_x1, "gap_w": gap,
-                "teal_pct": round(teal_pct, 4),
-                "red_pct": round(red_pct, 4),
-                "killer_pct": round(killer_pct, 4),
-                "victim_pct": round(victim_pct, 4),
-                "largest_blob": int(largest_area),
-                "bright_pct": round(bright_pct, 4),
-                "detected": victim_pct >= 0.15 and killer_pct < 0.58 and largest_area >= 150 and bright_pct >= 0.20,
-            })
-
-            if victim_pct < 0.15:
-                return None
-
-            # Killer-colour ceiling: false positives from headshot icons
-            # have killer_pct > 60% because the region is almost entirely
-            # killer team colour.  Real ult badges split the region,
-            # pulling killer_pct down to ~40-53%.
-            if killer_pct >= 0.58:
-                return None
-
-            # Contiguity check — require a substantial blob, not scatter.
-            if not contours_v:
-                return None
-            if largest_area < 150:          # reject sparse noise
-                return None
-
-            # Brightness gate: reject if gap region lacks bright weapon pixels
-            if bright_pct < 0.20:
-                return None
-
-            # Find the leftmost x in the gap where victim colour appears
-            # to determine where the badge region starts.
-            victim_cols = np.where(victim_mask.any(axis=0))[0]
-            if len(victim_cols) == 0:
-                return None
-
-            # Badge region: from the first victim-colour column to the
-            # right edge of the gap, in full-height row coordinates.
-            badge_x0_row = gap_x0 + int(victim_cols[0])
-            badge_x1_row = gap_x1
-
-            # Enforce minimum badge width (at least row-height square)
-            badge_w = badge_x1_row - badge_x0_row
-            if badge_w < h:
-                badge_x0_row = max(gap_x0, badge_x1_row - h)
-
-            badge_crop = row_img[0:h, badge_x0_row:badge_x1_row]
-            if badge_crop.size == 0:
-                return None
-
-            # Store badge bounds (absolute row coordinates) for diag overlay
-            self._last_ult_badge_bounds = (badge_x0_row, badge_x1_row)
-
-            crop_num = getattr(self, '_crop_counter', 0)
-            print(f"[CROP-DBG] crop#{crop_num} ULT BADGE detected (killer={killer_pct:.1%} victim={victim_pct:.1%}) -> badge x={badge_x0_row}-{badge_x1_row} w={badge_x1_row - badge_x0_row}")
-            return badge_crop
-
-        except Exception:
-            return None
 
     def _find_color_regions(self, mask: np.ndarray) -> List[Tuple[int, int, int, int]]:
         """Find contiguous color regions in a mask."""
@@ -4525,11 +3645,6 @@ class TopHUDDetector(BaseDetector):
         self._in_halftime = False
         self._halftime_listeners: list = []
         self._ROUND_DEBOUNCE_MS = 5000
-        self._zero_zero_seen = False
-    
-    def has_confirmed_zero_zero(self) -> bool:
-        """Returns True once a 0-0 score has been seen on screen via OCR."""
-        return self._zero_zero_seen
     
     def add_halftime_listener(self, callback):
         """Add a callback to be notified of halftime state changes."""
@@ -4603,17 +3718,14 @@ class TopHUDDetector(BaseDetector):
         h, w = roi_frame.shape[:2]
         top_hud_x, top_hud_y = 0.335, 0.005
         top_hud_w, top_hud_h = 0.330, 0.200
-        # Read score ROI coordinates from ROI_CONFIG (settings.py) instead of hardcoding
-        ls = ROI_CONFIG.get("top_left_score", (0.417, 0.009, 0.036, 0.055))
-        rs = ROI_CONFIG.get("top_right_score", (0.555, 0.009, 0.036, 0.055))
-        left_norm_x = (ls[0] - top_hud_x) / top_hud_w
-        left_norm_y = (ls[1] - top_hud_y) / top_hud_h
-        left_norm_w = ls[2] / top_hud_w
-        left_norm_h = ls[3] / top_hud_h
-        right_norm_x = (rs[0] - top_hud_x) / top_hud_w
-        right_norm_y = (rs[1] - top_hud_y) / top_hud_h
-        right_norm_w = rs[2] / top_hud_w
-        right_norm_h = rs[3] / top_hud_h
+        left_norm_x = (0.417 - top_hud_x) / top_hud_w
+        left_norm_y = (0.009 - top_hud_y) / top_hud_h
+        left_norm_w = 0.036 / top_hud_w
+        left_norm_h = 0.042 / top_hud_h
+        right_norm_x = (0.555 - top_hud_x) / top_hud_w
+        right_norm_y = (0.009 - top_hud_y) / top_hud_h
+        right_norm_w = 0.036 / top_hud_w
+        right_norm_h = 0.042 / top_hud_h
         left_x = int(left_norm_x * w)
         left_y = int(left_norm_y * h)
         score_w = max(int(left_norm_w * w), 40)
@@ -4630,10 +3742,6 @@ class TopHUDDetector(BaseDetector):
         right_score, right_conf = self._extract_score(right_roi)
         score_visible = left_score >= 0 and right_score >= 0 and left_conf >= 0.5 and right_conf >= 0.5
         if score_visible:
-            # Track when we first see a 0-0 score (match start)
-            if not self._zero_zero_seen and left_score == 0 and right_score == 0:
-                self._zero_zero_seen = True
-                print(f"[TopHUD] Match start detected: 0-0 score confirmed at t={t_ms/1000:.1f}s", flush=True)
             self._consecutive_invalid_frames = 0
             self._last_valid_score_ms = t_ms
             current_total = left_score + right_score

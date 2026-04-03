@@ -255,27 +255,7 @@ class OCREngine:
         # Threshold
         _, thresh = cv2.threshold(dilated, 150, 255, cv2.THRESH_BINARY)
         return cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
-
-    def _preprocess_saturation(self, image: np.ndarray) -> np.ndarray:
-        """Isolate white text from coloured backgrounds using HSV saturation+value.
-        
-        White text has low saturation and high value, while teal/orange
-        backgrounds have high saturation.  This produces a clean binary mask
-        that works much better than greyscale thresholding for same-colour
-        (self-kill) killfeed rows.
-        """
-        scaled = cv2.resize(image, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
-        hsv = cv2.cvtColor(scaled, cv2.COLOR_BGR2HSV)
-        h, s, v = cv2.split(hsv)
-        # White text: S < 80 AND V > 170
-        low_sat = cv2.threshold(s, 80, 255, cv2.THRESH_BINARY_INV)[1]
-        high_val = cv2.threshold(v, 170, 255, cv2.THRESH_BINARY)[1]
-        white_mask = cv2.bitwise_and(low_sat, high_val)
-        # Light morphology to connect broken strokes
-        kernel = np.ones((2, 2), np.uint8)
-        white_mask = cv2.dilate(white_mask, kernel, iterations=1)
-        return cv2.cvtColor(white_mask, cv2.COLOR_GRAY2BGR)
-
+    
     # ========================================
     # Core OCR Methods
     # ========================================
@@ -307,8 +287,7 @@ class OCREngine:
             min_confidence: Minimum confidence for individual results
             strategies: List of preprocessing strategies to use.
                        Options: 'original', 'contrast', 'sharpen', 'denoise',
-                               'threshold', 'adaptive', 'high_contrast',
-                               'morphology', 'saturation'
+                               'threshold', 'adaptive', 'high_contrast', 'morphology'
                        Default: ['original', 'contrast', 'sharpen', 'high_contrast']
         
         Returns:
@@ -332,7 +311,6 @@ class OCREngine:
             'adaptive': self._preprocess_adaptive,
             'high_contrast': self._preprocess_high_contrast,
             'morphology': self._preprocess_morphology,
-            'saturation': self._preprocess_saturation,
         }
         
         # Collect all results from all strategies
@@ -574,19 +552,14 @@ class OCREngine:
             
             # Find a cluster that this result belongs to
             for cluster in clusters:
-                # Check if position is close AND text is similar.
-                # IMPORTANT: always require position proximity so that identical
-                # text at different positions (e.g. self-kills in Valorant where
-                # the same player name appears on both sides) stays as separate
-                # clusters.
+                # Check if position is close (within 200 pixels in scaled space - preprocessing uses 3-4x scale)
+                # and text is similar (>50% match) OR same text regardless of position
                 for existing in cluster:
                     x_diff = abs(result.bbox[0] - existing.bbox[0])
                     text_sim = self._text_similarity(result.text, existing.text)
                     
-                    # Match if: close position AND text is similar
-                    # (at 2x scale, same name across strategies varies by <50px;
-                    #  different names on same row are 100-400px apart)
-                    if x_diff < 50 and text_sim > 0.5:
+                    # Match if: same text (>80% similar) OR (close position AND somewhat similar text)
+                    if text_sim > 0.8 or (x_diff < 200 and text_sim > 0.5):
                         matched_cluster = cluster
                         break
                 

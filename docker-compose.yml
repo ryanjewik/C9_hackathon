@@ -102,22 +102,12 @@ services:
       - ./vod_processor/match_vod.mp4:/app/uploads/match_vod.mp4:ro
       - ./vod_processor/match_vod_2.mp4:/app/uploads/match_vod_2.mp4:ro
       - ./vod_processor/match_vod_3.mp4:/app/uploads/match_vod_3.mp4:ro
-      - ./vod_processor/match_vod_4.mp4:/app/uploads/match_vod_4.mp4:ro
-      - ./vod_processor/match_vod_5.mp4:/app/uploads/match_vod_5.mp4:ro
-      - ./vod_processor/match_vod_6.mp4:/app/uploads/match_vod_6.mp4:ro
-      - ./vod_processor/match_vod_7.mp4:/app/uploads/match_vod_7.mp4:ro
-      - ./vod_processor/match_vod_8.mp4:/app/uploads/match_vod_8.mp4:ro
-      - ./vod_processor/match_vod_9.mp4:/app/uploads/match_vod_9.mp4:ro
       # Mount source code for live development (no need to rebuild/copy)
       - ./vod_processor/app:/app/app:ro
       - ./vod_processor/config:/app/config:ro
       - ./vod_processor:/app/vod_processor:ro
       - ./run_processing_db.py:/app/run_processing_db.py:ro
       - ./run_all_vod_tests.py:/app/run_all_vod_tests.py:ro
-      - ./extract_crops.py:/app/extract_crops.py:ro
-      - ./test_team_detect.py:/app/test_team_detect.py:ro
-      - ./debug_score_roi.py:/app/debug_score_roi.py:ro
-      - ./debug_rois.py:/app/debug_rois.py:ro
       # Mount valorant_resources so model + labels are available
       - ../valorant_resources:/app/valorant_resources:ro
     depends_on:
@@ -195,12 +185,10 @@ services:
     ports:
       - "5433:5432"  # Use 5433 to avoid conflicts with host postgres
     volumes:
-    - postgres_data:/var/lib/postgresql/data
-    # Mount restore script and backup file
-    - ./vod_processor/db_init/restore.sh:/docker-entrypoint-initdb.d/00-restore.sh:ro
-    - ./backup.sql:/docker-entrypoint-initdb.d/backup.sql:ro
-    - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
-    - ./users_schema.sql:/docker-entrypoint-initdb.d/users_schema.sql:ro
+      - postgres_data:/var/lib/postgresql/data
+      # Mount restore script and backup file
+      - ./vod_processor/db_init/restore.sh:/docker-entrypoint-initdb.d/00-restore.sh:ro
+      - ./backup.sql:/docker-entrypoint-initdb.d/backup.sql:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]

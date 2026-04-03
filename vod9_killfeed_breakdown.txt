@@ -1,0 +1,249 @@
+VOD 9 — Round-by-Round Kill Breakdown (2s Replay Filter)
+TL (left): kamo, MiniBoo, purp0, wayne, nAts
+VIT (right): Derke, Chronicle, Jamppi, PROFEK, UNFAKE
+Replay kills removed: 3
+============================================================
+
+Round 1  (score after: 0-1, won by VIT)
+----------------------------------------
+  Derke -> kamo
+  MiniBoo -> UNFAKE
+  Derke -> purp0
+  Derke -> wayne
+  Jamppi -> MiniBoo
+  Derke -> nAts
+  (6 kills)
+
+Round 2  (score after: 0-2, won by VIT)
+----------------------------------------
+  MiniBoo -> PROFEK
+  purp0 -> UNFAKE
+  Jamppi -> purp0
+  Jamppi -> kamo
+  Derke -> nAts
+  MiniBoo -> Chronicle
+  Derke -> MiniBoo
+  Jamppi -> wayne
+  (8 kills)
+
+Round 3  (score after: 0-3, won by VIT)
+----------------------------------------
+  nAts -> UNFAKE
+  PROFEK -> nAts
+  Derke -> MiniBoo
+  Chronicle -> kamo
+  wayne -> Chronicle
+  PROFEK -> wayne
+  (6 kills)
+
+Round 4  (score after: 0-4, won by VIT)
+----------------------------------------
+  Chronicle -> MiniBoo
+  Derke -> kamo
+  wayne -> Derke
+  purp0 -> Jamppi
+  UNFAKE -> wayne
+  purp0 -> UNFAKE
+  PROFEK -> purp0
+  Chronicle -> nAts
+  (8 kills)
+
+Round 5  (score after: 0-5, won by VIT)
+----------------------------------------
+  Jamppi -> MiniBoo
+  Derke -> kamo
+  nAts -> Jamppi
+  Derke -> nAts
+  PROFEK -> purp0
+  wayne -> Derke
+  wayne -> UNFAKE
+  (7 kills)
+
+Round 6  (score after: 0-6, won by VIT)
+----------------------------------------
+  MiniBoo -> PROFEK
+  Derke -> purp0
+  Derke -> wayne
+  Chronicle -> nAts
+  Jamppi -> kamo
+  MiniBoo -> Chronicle
+  MiniBoo -> Derke
+  UNFAKE -> MiniBoo
+  (8 kills)
+
+Round 7  (score after: 1-6, won by TL)
+----------------------------------------
+  Chronicle -> kamo
+  MiniBoo -> Derke
+  MiniBoo -> Jamppi
+  purp0 -> Chronicle
+  PROFEK -> purp0
+  MiniBoo -> UNFAKE
+  wayne -> PROFEK
+  (7 kills)
+
+Round 8  (score after: 2-6, won by TL)
+----------------------------------------
+  kamo -> Chronicle
+  kamo -> Jamppi
+  (2 kills)
+
+Round 9  (score after: 2-7, won by VIT)
+----------------------------------------
+  UNFAKE -> PROFEK
+  Derke -> purp0
+  Jamppi -> MiniBoo
+  kamo -> Derke
+  Jamppi -> kamo
+  wayne -> UNFAKE
+  Jamppi -> wayne
+  Chronicle -> nAts
+  (8 kills)
+
+Round 10  (score after: 2-8, won by VIT)
+----------------------------------------
+  Jamppi -> MiniBoo
+  Derke -> kamo
+  Chronicle -> nAts
+  wayne -> Derke
+  (4 kills)
+
+Round 11  (score after: 2-9, won by VIT)
+----------------------------------------
+  MiniBoo -> Derke
+  nAts -> PROFEK
+  kamo -> Jamppi
+  Derke -> MiniBoo
+  kamo -> Derke
+  UNFAKE -> nAts
+  UNFAKE -> kamo
+  UNFAKE -> wayne
+  UNFAKE -> purp0
+  (9 kills)
+
+Round 12  (score after: 2-10, won by VIT)
+----------------------------------------
+  UNFAKE -> nAts
+  Jamppi -> kamo
+  Chronicle -> MiniBoo
+  purp0 -> Derke
+  purp0 -> Jamppi
+  Chronicle -> purp0
+  PROFEK -> wayne
+  (7 kills)
+
+Round 13  (score after: 3-10, won by TL)
+----------------------------------------
+  MiniBoo -> PROFEK
+  Jamppi -> MiniBoo
+  kamo -> Jamppi
+  kamo -> UNFAKE
+  kamo -> Derke
+  purp0 -> Chronicle
+  (6 kills)
+
+Round 14  (score after: 4-10, won by TL)
+----------------------------------------
+  Derke -> kamo
+  MiniBoo -> Derke
+  Jamppi -> wayne
+  purp0 -> Jamppi
+  purp0 -> UNFAKE
+  MiniBoo -> PROFEK
+  Chronicle -> MiniBoo
+  Chronicle -> nAts
+  purp0 -> Chronicle
+  (9 kills)
+
+Round 15  (score after: 4-11, won by VIT)
+----------------------------------------
+  Jamppi -> MiniBoo
+  Jamppi -> wayne
+  kamo -> Jamppi
+  nAts -> Derke
+  nAts -> Chronicle
+  UNFAKE -> nAts
+  PROFEK -> purp0
+  kamo -> UNFAKE
+  PROFEK -> kamo
+  (9 kills)
+
+Round 16  (score after: 5-11, won by TL)
+----------------------------------------
+  UNFAKE -> purp0
+  wayne -> UNFAKE
+  Derke -> wayne
+  MiniBoo -> PROFEK
+  MiniBoo -> Derke
+  kamo -> Jamppi
+  Chronicle -> MiniBoo
+  kamo -> Chronicle
+  (8 kills)
+
+Round 17  (score after: 6-11, won by TL)
+----------------------------------------
+  nAts -> Chronicle
+  nAts -> Derke
+  nAts -> UNFAKE
+  PROFEK -> nAts
+  PROFEK -> MiniBoo
+  wayne -> PROFEK
+  Jamppi SELF-KILL (fall damage)
+  (7 kills)
+
+Round 18  (score after: 6-12, won by VIT)
+----------------------------------------
+  UNFAKE -> purp0
+  MiniBoo -> PROFEK
+  Derke -> kamo
+  UNFAKE -> MiniBoo
+  Chronicle -> wayne
+  Chronicle -> nAts
+  (6 kills)
+
+Round 19  (score after: 7-12, won by TL)
+----------------------------------------
+  MiniBoo -> Derke
+  PROFEK -> wayne
+  MiniBoo -> UNFAKE
+  Derke -> MiniBoo
+  kamo -> Derke
+  kamo -> Jamppi
+  Chronicle -> purp0
+  kamo -> Chronicle
+  nAts -> PROFEK
+  (9 kills)
+
+Round 20  (score after: 8-12, won by TL)
+----------------------------------------
+  purp0 -> PROFEK
+  MiniBoo -> UNFAKE
+  (2 kills)
+
+Round 21  (score after: 8-13, won by VIT)
+----------------------------------------
+  Derke -> MiniBoo
+  Derke -> nAts
+  Derke -> kamo
+  Derke -> wayne
+  purp0 -> UNFAKE
+  purp0 -> PROFEK
+  Chronicle -> purp0
+  (7 kills)
+
+============================================================
+PLAYER KILL TOTALS
+----------------------------------------
+  Derke (VIT): 23
+  MiniBoo (TL): 19
+  Chronicle (VIT): 16
+  Jamppi (VIT): 15
+  kamo (TL): 15
+  purp0 (TL): 13
+  UNFAKE (VIT): 12
+  PROFEK (VIT): 11
+  nAts (TL): 9
+  wayne (TL): 9
+  Total: 142
+  Self-kills: 1
+  Replay-filtered: 3
