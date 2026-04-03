@@ -21,6 +21,9 @@ import com.example.identity_service.entity.Team;
 import com.example.identity_service.entity.Invitation;
 import com.example.identity_service.entity.TeamMember;
 import com.example.identity_service.dto.TeamMemberRoleDto;
+import com.example.identity_service.dto.ApiKeyCreateDto;
+import com.example.identity_service.dto.ApiKeyResponseDto;
+import com.example.identity_service.service.ApiKeyPlainCache;
 import com.example.identity_service.entity.Invitation;
 import com.example.identity_service.entity.TeamMember;
 
@@ -192,6 +195,61 @@ public class TeamAdminController {
     public ResponseEntity<?> getTeamMembers(@PathVariable("teamId") UUID teamId, @AuthenticationPrincipal Jwt jwt) {
         if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
         return ResponseEntity.ok(teamAdminService.viewTeamMembers(teamId));
+    }
+
+    /** Create an API key for a team (owner or admin only). Returns the plaintext key once. */
+    @PostMapping("/{teamId}/apikeys")
+    public ResponseEntity<?> createApiKey(@PathVariable("teamId") UUID teamId,
+                                         @RequestBody ApiKeyCreateDto dto,
+                                         @AuthenticationPrincipal Jwt jwt) {
+        if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
+        UUID requester;
+        try { requester = UUID.fromString(jwt.getSubject()); } catch (Exception ex) { return ResponseEntity.status(401).body(Map.of("error","invalid_token_subject")); }
+        Optional<com.example.identity_service.entity.ApiKey> akOpt = teamAdminService.createApiKey(teamId, dto.getName(), requester);
+        if (akOpt.isEmpty()) return ResponseEntity.status(403).body(Map.of("error","not_authorized_or_failed"));
+        com.example.identity_service.entity.ApiKey saved = akOpt.get();
+        String plaintext = ApiKeyPlainCache.take(saved.getId());
+        ApiKeyResponseDto resp = new ApiKeyResponseDto();
+        resp.setId(saved.getId());
+        resp.setName(saved.getName());
+        resp.setKeyPrefix(saved.getKeyPrefix());
+        resp.setCreatedAt(saved.getCreatedAt());
+        resp.setKey(plaintext);
+        return ResponseEntity.status(201).body(resp);
+    }
+
+    /** List API keys for a team (owner or admin). Does not reveal plaintext keys. */
+    @GetMapping("/{teamId}/apikeys")
+    public ResponseEntity<?> listApiKeys(@PathVariable("teamId") UUID teamId,
+                                        @AuthenticationPrincipal Jwt jwt) {
+        if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
+        UUID requester;
+        try { requester = UUID.fromString(jwt.getSubject()); } catch (Exception ex) { return ResponseEntity.status(401).body(Map.of("error","invalid_token_subject")); }
+        java.util.List<com.example.identity_service.entity.ApiKey> keys = teamAdminService.listApiKeys(teamId, requester);
+        java.util.List<ApiKeyResponseDto> out = new java.util.ArrayList<>();
+        for (com.example.identity_service.entity.ApiKey k : keys) {
+            ApiKeyResponseDto dto = new ApiKeyResponseDto();
+            dto.setId(k.getId());
+            dto.setName(k.getName());
+            dto.setKeyPrefix(k.getKeyPrefix());
+            dto.setCreatedAt(k.getCreatedAt());
+            // do NOT set plaintext `key` field
+            out.add(dto);
+        }
+        return ResponseEntity.ok(out);
+    }
+
+    /** Delete an API key (owner or admin). */
+    @DeleteMapping("/{teamId}/apikeys/{apiKeyId}")
+    public ResponseEntity<?> deleteApiKey(@PathVariable("teamId") UUID teamId,
+                                         @PathVariable("apiKeyId") UUID apiKeyId,
+                                         @AuthenticationPrincipal Jwt jwt) {
+        if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
+        UUID requester;
+        try { requester = UUID.fromString(jwt.getSubject()); } catch (Exception ex) { return ResponseEntity.status(401).body(Map.of("error","invalid_token_subject")); }
+        boolean ok = teamAdminService.deleteApiKey(apiKeyId, requester);
+        if (!ok) return ResponseEntity.status(403).body(Map.of("error","not_authorized_or_not_found"));
+        return ResponseEntity.noContent().build();
     }
 
 }
