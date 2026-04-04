@@ -15,6 +15,7 @@ from config.settings import (
     KILLFEED_NUM_ROWS,
     KILLFEED_EXTENDED_ROWS,
     OCR_NAME_CORRECTIONS,
+    TEAM_COMMS_ROI_OVERRIDES,
 )
 
 __all__ = [
@@ -32,4 +33,5 @@ __all__ = [
     "KILLFEED_NUM_ROWS",
     "KILLFEED_EXTENDED_ROWS",
     "OCR_NAME_CORRECTIONS",
+    "TEAM_COMMS_ROI_OVERRIDES",
 ]

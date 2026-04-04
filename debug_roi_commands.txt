@@ -1,0 +1,8 @@
+docker cp e:\cloud9_hackathon\debug_rois_frame.py vod-processor-worker:/app/debug_rois_frame.py; docker exec vod-processor-worker python3 /app/debug_rois_frame.py --time 07:44 --mode tc --out /app/outputs/debug_roi_both_vod9.png
+
+docker cp vod-processor-worker:/app/outputs/debug_roi_both_vod9.png E:\cloud9_hackathon\debug_roi_both_vod9.png
+
+"team_comms": (0.815, 0.055, 0.150, 0.060),
+
+
+docker cp e:\cloud9_hackathon\debug_rois_frame.py vod-processor-worker:/app/debug_rois_frame.py; docker exec vod-processor-worker python3 /app/debug_rois_frame.py --time 29:23 --out /app/outputs/debug_roi_both_vod9.png

@@ -26,6 +26,7 @@ from config import (
     KILLFEED_NUM_ROWS,
     KILLFEED_EXTENDED_ROWS,
     OCR_NAME_CORRECTIONS,
+    TEAM_COMMS_ROI_OVERRIDES,
 )
 
 
@@ -371,11 +372,19 @@ class VODProcessor:
                         killfeed_detector.end_halftime_early(timestamp_ms)
                 top_hud_detector.add_halftime_listener(on_halftime_change)
             
-            # Pre-compute ROI pixel coordinates
-            roi_px_cache = {
+            # Pre-compute ROI pixel coordinates (normal + TEAM COMMS)
+            roi_px_normal = {
                 name: roi_to_px(frame_width, frame_height, roi_norm)
                 for name, roi_norm in ROI_CONFIG.items()
             }
+            roi_px_tc = dict(roi_px_normal)  # start with normal, overlay overrides
+            for name, roi_norm in TEAM_COMMS_ROI_OVERRIDES.items():
+                roi_px_tc[name] = roi_to_px(frame_width, frame_height, roi_norm)
+            roi_px_cache = roi_px_normal  # default to normal
+            
+            # Team comms detection state
+            team_comms_roi_px = roi_px_normal.get("team_comms")
+            team_comms_active = False
             
             # Processing loop
             all_events: List[Event] = []
@@ -402,6 +411,24 @@ class VODProcessor:
                     continue
                 
                 t_ms = (frame_idx / fps) * 1000 if fps > 0 else 0
+                
+                # ── TEAM COMMS detection ──────────────────────────
+                # Check for "TEAM COMMS" overlay in the upper-right.
+                # When active, swap to the compressed-viewport ROI cache.
+                if team_comms_roi_px is not None:
+                    tc_crop = crop(frame, team_comms_roi_px)
+                    if tc_crop.size > 0:
+                        gray = cv2.cvtColor(tc_crop, cv2.COLOR_BGR2GRAY)
+                        # TEAM COMMS text is bright white on dark bg
+                        white_ratio = float(np.count_nonzero(gray > 200)) / gray.size
+                        tc_detected = white_ratio > 0.15
+                    else:
+                        tc_detected = False
+                    
+                    if tc_detected != team_comms_active:
+                        team_comms_active = tc_detected
+                        roi_px_cache = roi_px_tc if team_comms_active else roi_px_normal
+                        print(f"[PROC] TEAM COMMS {'ON' if team_comms_active else 'OFF'} at t={t_ms/1000:.1f}s", flush=True)
                 
                 # Detect frame state (GAMEPLAY, REPLAY, TRANSITION)
                 replay_roi = crop(frame, roi_px_cache.get("replay_indicator", (0, 0, 1, 1)))

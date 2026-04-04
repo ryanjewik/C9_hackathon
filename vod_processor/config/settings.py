@@ -94,6 +94,11 @@ ROI_CONFIG: Dict[str, Tuple[float, float, float, float]] = {
     # h=0.318 (~343px) gives 38px per row to match actual kill entry spacing
     "killfeed": (0.690, 0.092, 0.305, 0.318),
 
+    # Team Comms overlay detection
+    # When "TEAM COMMS" text is visible in the upper-right, the game viewport
+    # is compressed and killfeed positions shift. Detect the text region.
+    "team_comms": (0.815, 0.055, 0.150, 0.060),
+
     # Bottom HUD
     "bottom_hud": (0.215, 0.870, 0.570, 0.125),
 
@@ -214,3 +219,41 @@ OCR_NAME_CORRECTIONS: Dict[str, str] = {
 
 # Deduplication window (ms)
 KILL_DEDUP_WINDOW_MS = 6000
+
+# ── TEAM COMMS overlay ROI overrides ──────────────────────────────────
+# When "TEAM COMMS" is detected, the broadcast compresses the game viewport
+# to roughly the left 56% of the screen. These overrides replace the normal
+# ROI positions for affected regions.  Only ROIs that move need entries here.
+TEAM_COMMS_ROI_OVERRIDES: Dict[str, Tuple[float, float, float, float]] = {
+    # Top HUD
+    "map_indicator":      (0.000, 0.000, 0.240, 0.025),
+    "minimap":            (0.009, 0.032, 0.170, 0.335),
+    "top_hud":            (0.280, 0.005, 0.200, 0.140),
+    "top_left_score":     (0.315, 0.009, 0.025, 0.042),
+    "top_center_timer":   (0.360, 0.010, 0.045, 0.035),
+    "top_right_score":    (0.420, 0.009, 0.025, 0.042),
+    "top_spike_icon":     (0.365, 0.055, 0.025, 0.045),
+    "top_plant_text":     (0.320, 0.090, 0.110, 0.055),
+    "score_bar":          (0.290, 0.010, 0.180, 0.045),
+    "top_left_team_tag":  (0.285, 0.007, 0.025, 0.035),
+    "top_right_team_tag": (0.445, 0.007, 0.025, 0.035),
+    # Killfeed
+    "killfeed":           (0.520, 0.065, 0.230, 0.250),
+    # Left panels & player cards
+    "left_panels":        (0.000, 0.385, 0.130, 0.355),
+    "left_player_1":      (0.003, 0.385, 0.130, 0.065),
+    "left_player_2":      (0.003, 0.457, 0.130, 0.065),
+    "left_player_3":      (0.003, 0.531, 0.130, 0.065),
+    "left_player_4":      (0.003, 0.607, 0.130, 0.065),
+    "left_player_5":      (0.003, 0.680, 0.130, 0.065),
+    # Right panels & player cards
+    "right_panels":       (0.620, 0.385, 0.130, 0.355),
+    "right_player_1":     (0.620, 0.385, 0.130, 0.065),
+    "right_player_2":     (0.620, 0.457, 0.130, 0.065),
+    "right_player_3":     (0.620, 0.531, 0.130, 0.065),
+    "right_player_4":     (0.620, 0.607, 0.130, 0.065),
+    "right_player_5":     (0.620, 0.680, 0.130, 0.065),
+    # Bottom
+    "bottom_hud":         (0.200, 0.670, 0.320, 0.100),
+    "replay_indicator":   (0.560, 0.600, 0.170, 0.120),
+}
