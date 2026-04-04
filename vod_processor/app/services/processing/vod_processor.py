@@ -3112,7 +3112,17 @@ class KillfeedDetector(BaseDetector):
             import traceback; traceback.print_exc()
             print(f"[CROP-ERR] _extract_weapon_icon failed: {_crop_err}")
 
-        # (Removed: ult-badge revalidation logic)
+        # Try to extract ult badge from the gap to the right of the weapon icon
+        ult_badge_img = None
+        if icon_img is not None:
+            last_bounds = getattr(self, '_last_crop_bounds', None)
+            if last_bounds is not None and vtl is not None:
+                gap_left = last_bounds[1]   # right edge of weapon icon crop
+                gap_right = vtl             # left edge of victim text
+                if gap_right - gap_left > 20:
+                    ult_badge_img = self._maybe_extract_ult_badge(
+                        row_img, gap_left, gap_right
+                    )
 
         crop_method = getattr(self, '_last_crop_method', None) or "unknown"
 
@@ -3125,6 +3135,16 @@ class KillfeedDetector(BaseDetector):
                 f"crop_{self._crop_counter:05d}_t{int(t_ms)}ms.png"
             )
             cv2.imwrite(crop_path, icon_img)
+
+            # Save ult badge crop if detected
+            if ult_badge_img is not None:
+                ult_dir = os.path.join(self._crop_output_dir, "ult_badge")
+                os.makedirs(ult_dir, exist_ok=True)
+                ult_path = os.path.join(
+                    ult_dir,
+                    f"ult_{self._crop_counter:05d}_t{int(t_ms)}ms.png"
+                )
+                cv2.imwrite(ult_path, ult_badge_img)
 
             # Track crop paths for ghost orphan cleanup
             _crop_key = (pc["killer_name"].lower(), pc["victim_name"].lower(), int(t_ms))
