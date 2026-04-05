@@ -266,17 +266,44 @@ public class TeamAdminService {
         Optional<Team> tOpt = teamAdminRepository.findById(teamId);
         if (tOpt.isEmpty()) return false;
         Team t = tOpt.get();
-        boolean allowed = requesterId.equals(t.getOwnerUserId());
-        if (!allowed) {
-            java.util.List<TeamMember> members = teamMemberRepository.findAllByIdUserId(requesterId);
-            for (TeamMember m : members) {
-                if (m.getId().getTeamId().equals(teamId) && "admin".equalsIgnoreCase(m.getRole())) { allowed = true; break; }
+        // If requester is trying to remove themselves, allow (members and admins may leave)
+        if (requesterId.equals(memberUserId)) {
+            // owner cannot simply leave the team
+            if (requesterId.equals(t.getOwnerUserId())) return false;
+            TeamMemberId selfId = new TeamMemberId(teamId, memberUserId);
+            if (!teamMemberRepository.existsById(selfId)) return false;
+            try {
+                teamMemberRepository.deleteById(selfId);
+                return true;
+            } catch (Exception ex) {
+                return false;
             }
         }
-        if (!allowed) return false;
+
+        // Otherwise, requester must be owner or admin. Admins may delete members but NOT admins; owners can delete anyone.
+        boolean isOwner = requesterId.equals(t.getOwnerUserId());
+        boolean isAdmin = false;
+        if (!isOwner) {
+            java.util.List<TeamMember> requesterMemberships = teamMemberRepository.findAllByIdUserId(requesterId);
+            for (TeamMember m : requesterMemberships) {
+                if (m.getId().getTeamId().equals(teamId) && "admin".equalsIgnoreCase(m.getRole())) { isAdmin = true; break; }
+            }
+        }
+        if (!isOwner && !isAdmin) return false;
 
         TeamMemberId id = new TeamMemberId(teamId, memberUserId);
         if (!teamMemberRepository.existsById(id)) return false;
+        // if requester is admin, ensure target is not an admin
+        if (isAdmin) {
+            Optional<TeamMember> targetOpt = teamMemberRepository.findById(id);
+            if (targetOpt.isPresent()) {
+                String targetRole = targetOpt.get().getRole();
+                if ("admin".equalsIgnoreCase(targetRole) || requesterId.equals(t.getOwnerUserId())) {
+                    // admins may NOT delete other admins (and cannot delete owners)
+                    return false;
+                }
+            }
+        }
         try {
             teamMemberRepository.deleteById(id);
             return true;
@@ -291,19 +318,40 @@ public class TeamAdminService {
         Optional<Team> tOpt = teamAdminRepository.findById(teamId);
         if (tOpt.isEmpty()) return false;
         Team t = tOpt.get();
-        boolean allowed = requesterId.equals(t.getOwnerUserId());
-        if (!allowed) {
-            java.util.List<TeamMember> members = teamMemberRepository.findAllByIdUserId(requesterId);
-            for (TeamMember m : members) {
-                if (m.getId().getTeamId().equals(teamId) && "admin".equalsIgnoreCase(m.getRole())) { allowed = true; break; }
+        boolean isOwner = requesterId.equals(t.getOwnerUserId());
+        boolean isAdmin = false;
+        if (!isOwner) {
+            java.util.List<TeamMember> requesterMemberships = teamMemberRepository.findAllByIdUserId(requesterId);
+            for (TeamMember m : requesterMemberships) {
+                if (m.getId().getTeamId().equals(teamId) && "admin".equalsIgnoreCase(m.getRole())) { isAdmin = true; break; }
             }
         }
-        if (!allowed) return false;
+        if (!isOwner && !isAdmin) return false;
 
         TeamMemberId id = new TeamMemberId(teamId, memberUserId);
         Optional<TeamMember> mOpt = teamMemberRepository.findById(id);
         if (mOpt.isEmpty()) return false;
         TeamMember member = mOpt.get();
+        String currentRole = member.getRole();
+        String normalizedNew = newRole == null ? null : newRole.toLowerCase();
+
+        // Rules: admins may promote members -> admin, but cannot promote to owner, and cannot demote admins -> member.
+        if (isAdmin && !isOwner) {
+            if ("owner".equalsIgnoreCase(normalizedNew)) {
+                return false; // admin cannot make someone owner
+            }
+            if ("admin".equalsIgnoreCase(currentRole) && "member".equalsIgnoreCase(normalizedNew)) {
+                return false; // admin cannot demote another admin
+            }
+        }
+
+        // Prevent changing the team's owner role accidentally unless requester is owner
+        if (!isOwner) {
+            if (memberUserId.equals(t.getOwnerUserId())) {
+                return false; // only owner may change owner role
+            }
+        }
+
         member.setRole(newRole);
         try {
             teamMemberRepository.save(member);
@@ -311,6 +359,14 @@ public class TeamAdminService {
         } catch (Exception ex) {
             return false;
         }
+    }
+
+    /**
+     * Allow a member to leave the team voluntarily (members and admins). Owners may NOT leave via this call.
+     */
+    @Transactional
+    public boolean leaveTeam(UUID teamId, UUID requesterId) {
+        return removeTeamMember(teamId, requesterId, requesterId);
     }
 
     /**

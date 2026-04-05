@@ -175,6 +175,18 @@ public class TeamAdminController {
         return ResponseEntity.noContent().build();
     }
 
+    /** Current user leaves a team (members and admins may leave; owners may not). */
+    @DeleteMapping("/{teamId}/members/me")
+    public ResponseEntity<?> leaveTeam(@PathVariable("teamId") UUID teamId,
+                                       @AuthenticationPrincipal Jwt jwt) {
+        if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
+        UUID requester;
+        try { requester = UUID.fromString(jwt.getSubject()); } catch (Exception ex) { return ResponseEntity.status(401).body(Map.of("error","invalid_token_subject")); }
+        boolean ok = teamAdminService.leaveTeam(teamId, requester);
+        if (!ok) return ResponseEntity.status(400).body(Map.of("error","failed_to_leave_team"));
+        return ResponseEntity.noContent().build();
+    }
+
     /** Update a member's role */
     @PatchMapping("/{teamId}/members/{memberId}/role")
     public ResponseEntity<?> updateMemberRole(@PathVariable("teamId") UUID teamId,
