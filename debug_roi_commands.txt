@@ -6,3 +6,12 @@ docker cp vod-processor-worker:/app/outputs/debug_roi_both_vod9.png E:\cloud9_ha
 
 
 docker cp e:\cloud9_hackathon\debug_rois_frame.py vod-processor-worker:/app/debug_rois_frame.py; docker exec vod-processor-worker python3 /app/debug_rois_frame.py --time 29:23 --out /app/outputs/debug_roi_both_vod9.png
+
+docker exec vod-processor-worker rm -rf /app/outputs/crops/diag/* /app/outputs/crops/ocr_hybrid/* /app/outputs/crops/ult_badge/*
+
+docker exec vod-processor-worker python3 /app/extract_crops.py --vods 9 --left-players kamo MiniBoo purp0 wayne nAts --right-players Derke Chronicle Jamppi PROFEK UNFAKE 2>&1 | Tee-Object -FilePath E:\cloud9_hackathon\extract_log_vod9_v2.txt
+
+New-Item -ItemType Directory -Force E:\cloud9_hackathon\crops_vod9_v4\ocr_hybrid, E:\cloud9_hackathon\crops_vod9_v4\diag, E:\cloud9_hackathon\crops_vod9_v4\ult_badge
+docker cp vod-processor-worker:/app/outputs/crops/ocr_hybrid/. E:\cloud9_hackathon\crops_vod9_v4\ocr_hybrid\
+docker cp vod-processor-worker:/app/outputs/crops/diag/. E:\cloud9_hackathon\crops_vod9_v4\diag\
+docker cp vod-processor-worker:/app/outputs/crops/ult_badge/. E:\cloud9_hackathon\crops_vod9_v4\ult_badge\

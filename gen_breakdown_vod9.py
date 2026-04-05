@@ -1,7 +1,7 @@
 import re
 from collections import defaultdict
 
-with open(r'E:\cloud9_hackathon\extract_log_vod9_v1.txt', 'r', encoding='utf-16') as f:
+with open(r'E:\cloud9_hackathon\extract_log_vod9_v3.txt', 'r', encoding='utf-16') as f:
     lines = f.readlines()
 
 LEFT_TEAM = "TL"
@@ -29,7 +29,7 @@ for line in lines:
         kills.append((float(m_kill.group(1)), int(m_kill.group(2)), m_kill.group(3), m_kill.group(4), False))
         continue
     
-    # Removed kill
+    # Removed kill (replay filter)
     m_rem = re.match(r'\[KILL-REMOVED\] t=([\d.]+)s (.+?) killed (.+?) \(replay filter\)', line)
     if m_rem:
         removed_set.add((float(m_rem.group(1)), m_rem.group(2), m_rem.group(3)))
@@ -37,6 +37,11 @@ for line in lines:
     m_rem_self = re.match(r'\[KILL-REMOVED\] t=([\d.]+)s (.+?) SELF-KILL', line)
     if m_rem_self:
         removed_set.add((float(m_rem_self.group(1)), m_rem_self.group(2), m_rem_self.group(2)))
+        continue
+    # Removed kill (crop position-rejected)
+    m_pos = re.match(r'\[KILL-REMOVED\] t=([\d.]+)s R\d+ (.+?) -> (.+?): crop position-rejected', line)
+    if m_pos:
+        removed_set.add((float(m_pos.group(1)), m_pos.group(2), m_pos.group(3)))
         continue
     
     # Round transition

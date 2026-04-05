@@ -5,6 +5,7 @@ Extracts game events from VALORANT VODs.
 
 import os
 import json
+import re
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -382,9 +383,25 @@ class VODProcessor:
                 roi_px_tc[name] = roi_to_px(frame_width, frame_height, roi_norm)
             roi_px_cache = roi_px_normal  # default to normal
             
-            # Team comms detection state
+            # Team comms detection state (with hysteresis to avoid flicker)
             team_comms_roi_px = roi_px_normal.get("team_comms")
             team_comms_active = False
+            _tc_consecutive = 0       # frames in a row matching the *opposite* state
+            _TC_HYSTERESIS = 5        # require N consecutive frames before toggling
+
+            # Grab PaddleOCR reader for TEAM COMMS text detection
+            _tc_paddle_reader = None
+            try:
+                from app.services.ocr.ocr_engine import get_ocr_engine
+                _tc_engine = get_ocr_engine()
+                _tc_engine._lazy_init()
+                _tc_paddle_reader = getattr(_tc_engine, '_paddleocr_reader', None)
+                if _tc_paddle_reader is not None:
+                    print(f"[PROC] TEAM COMMS OCR reader acquired (PaddleOCR)")
+                else:
+                    print(f"[PROC] WARNING: PaddleOCR reader not available for TEAM COMMS detection")
+            except Exception as _tc_err:
+                print(f"[PROC] WARNING: Could not init OCR for TEAM COMMS: {_tc_err}")
             
             # Processing loop
             all_events: List[Event] = []
@@ -412,23 +429,41 @@ class VODProcessor:
                 
                 t_ms = (frame_idx / fps) * 1000 if fps > 0 else 0
                 
-                # ── TEAM COMMS detection ──────────────────────────
+                # ── TEAM COMMS detection (OCR-based, with hysteresis) ──
                 # Check for "TEAM COMMS" overlay in the upper-right.
                 # When active, swap to the compressed-viewport ROI cache.
-                if team_comms_roi_px is not None:
+                # Use OCR to confirm the text, with a fast brightness pre-filter
+                # to skip entirely dark frames (avoids unnecessary OCR calls).
+                if team_comms_roi_px is not None and _tc_paddle_reader is not None:
                     tc_crop = crop(frame, team_comms_roi_px)
+                    tc_detected = False
                     if tc_crop.size > 0:
                         gray = cv2.cvtColor(tc_crop, cv2.COLOR_BGR2GRAY)
-                        # TEAM COMMS text is bright white on dark bg
                         white_ratio = float(np.count_nonzero(gray > 200)) / gray.size
-                        tc_detected = white_ratio > 0.15
-                    else:
-                        tc_detected = False
+                        # Quick pre-filter: skip OCR if no bright content at all
+                        if white_ratio > 0.05:
+                            try:
+                                tc_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                                ocr_out = _tc_paddle_reader.ocr(tc_bgr, det=False, cls=False)
+                                if ocr_out and ocr_out[0]:
+                                    for item in ocr_out[0]:
+                                        if item and len(item) >= 2:
+                                            txt = re.sub(r'[^A-Z]', '', str(item[0]).upper())
+                                            if "TEAMCOMMS" in txt or ("TEAM" in txt and "COMM" in txt):
+                                                tc_detected = True
+                                                break
+                            except Exception:
+                                pass  # OCR failure → assume not detected
                     
                     if tc_detected != team_comms_active:
-                        team_comms_active = tc_detected
-                        roi_px_cache = roi_px_tc if team_comms_active else roi_px_normal
-                        print(f"[PROC] TEAM COMMS {'ON' if team_comms_active else 'OFF'} at t={t_ms/1000:.1f}s", flush=True)
+                        _tc_consecutive += 1
+                        if _tc_consecutive >= _TC_HYSTERESIS:
+                            team_comms_active = tc_detected
+                            _tc_consecutive = 0
+                            roi_px_cache = roi_px_tc if team_comms_active else roi_px_normal
+                            print(f"[PROC] TEAM COMMS {'ON' if team_comms_active else 'OFF'} at t={t_ms/1000:.1f}s", flush=True)
+                    else:
+                        _tc_consecutive = 0
                 
                 # Detect frame state (GAMEPLAY, REPLAY, TRANSITION)
                 replay_roi = crop(frame, roi_px_cache.get("replay_indicator", (0, 0, 1, 1)))
@@ -561,6 +596,29 @@ class VODProcessor:
                     print(f"[{job_id}] Flushing {len(d._pending_kills)} pending kill events at end of video")
                     all_events.extend(d._pending_kills)
                     d._pending_kills.clear()
+            
+            # Remove kills whose crops were position-rejected (text too far left,
+            # indicating a non-killfeed artifact).  These may have already been
+            # flushed from _pending_kills into all_events before the crop was
+            # finalized, so we filter here as a catch-all.
+            for d in detectors:
+                rejected = getattr(d, '_position_rejected_kills', set())
+                if rejected:
+                    before = len(all_events)
+                    def _is_rejected(ev):
+                        if ev.type == "KILL_EVENT":
+                            k = (ev.payload.get("killer_name","").lower(),
+                                 ev.payload.get("victim_name","").lower(), int(ev.t_ms))
+                            return k in rejected
+                        if ev.type == "DEATH_EVENT":
+                            k = (ev.payload.get("killed_by","").lower(),
+                                 ev.payload.get("player_name","").lower(), int(ev.t_ms))
+                            return k in rejected
+                        return False
+                    all_events = [e for e in all_events if not _is_rejected(e)]
+                    removed = before - len(all_events)
+                    if removed:
+                        print(f"[{job_id}] Position-rejection filter removed {removed} events")
             
             # Post-process events
             self._job_manager.update_job_status(
@@ -2507,6 +2565,7 @@ class KillfeedDetector(BaseDetector):
         self._REPLAY_LOOKBACK_MS: float = 2000  # 2.0 seconds lookback
         self._pending_kills: List[Event] = []  # Buffer kills before confirming them
         self._replay_removed_kills: List[Event] = []  # Kills removed by REPLAY filter
+        self._position_rejected_kills: set = set()  # (killer_lower, victim_lower, int_t_ms) tuples for crops rejected by position
         
         # NOTE: Per-round victim death tracking removed — it was rejecting
         # legitimate kills when OCR timing or replay detection was slightly off.
@@ -3138,6 +3197,36 @@ class KillfeedDetector(BaseDetector):
         except Exception as _crop_err:
             import traceback; traceback.print_exc()
             print(f"[CROP-ERR] _extract_weapon_icon failed: {_crop_err}")
+
+        # If the crop was rejected due to position (text too far left),
+        # the detected "kill" is likely an artifact (e.g. economy overlay,
+        # character splash).  Record it so the event can be filtered out
+        # wherever it ends up (pending or already flushed).
+        if getattr(self, '_last_crop_position_rejected', False):
+            reject_key = (pc["killer_name"].lower(), pc["victim_name"].lower(), int(t_ms))
+            self._position_rejected_kills.add(reject_key)
+            # Also try to remove from pending (may already be flushed)
+            before_len = len(self._pending_kills)
+            self._pending_kills = [
+                k for k in self._pending_kills
+                if not (
+                    int(k.t_ms) == int(t_ms)
+                    and (
+                        (k.type == "KILL_EVENT"
+                         and k.payload.get("killer_name", "").lower() == reject_key[0]
+                         and k.payload.get("victim_name", "").lower() == reject_key[1])
+                        or
+                        (k.type == "DEATH_EVENT"
+                         and k.payload.get("player_name", "").lower() == reject_key[1]
+                         and k.payload.get("killed_by", "").lower() == reject_key[0])
+                    )
+                )
+            ]
+            removed = before_len - len(self._pending_kills)
+            print(f"[KILL-REMOVED] t={t_ms/1000:.1f}s R{pc['display_round']} "
+                  f"{pc['killer_name']} -> {pc['victim_name']}: "
+                  f"crop position-rejected (removed {removed} pending events)")
+            return
 
         # Try to extract ult badge from the gap to the right of the weapon icon
         ult_badge_img = None
@@ -3974,6 +4063,7 @@ class KillfeedDetector(BaseDetector):
             self._last_crop_bounds = None
             self._last_search_zone = None
             self._last_crop_method = None
+            self._last_crop_position_rejected = False
 
             MIN_CROP_W = max(38, h)  # minimum crop width = row height or 38px
             crop_num = getattr(self, '_crop_counter', 0)
@@ -3995,6 +4085,7 @@ class KillfeedDetector(BaseDetector):
                 # economy overlay, character splash screen).
                 if left_bound < w * 0.30:
                     print(f"[CROP-DBG] crop#{crop_num} SKIP: kR={left_bound} < {w*0.30:.0f} (position too far left)")
+                    self._last_crop_position_rejected = True
                     return None
 
                 # ── Ability icon detection ──
@@ -4105,8 +4196,16 @@ class KillfeedDetector(BaseDetector):
                     # For very large gaps the gun sits fully inside
                     # kR..vL — don't search left of kR to avoid
                     # killer-name text on bright/yellow backgrounds.
+                    # Also skip the killer's agent portrait icon
+                    # (~25-30px circle) that sits immediately right
+                    # of the killer name text.
                     if gap > 140:
-                        search_x0 = max(int(w * 0.12), left_bound)
+                        portrait_skip = min(30, int(gap * 0.18))
+                        search_x0 = max(int(w * 0.12), left_bound + portrait_skip)
+                    elif ktr_skip_bright:
+                        # Bright unsaturated pixels at kR — could be text,
+                        # not weapon.  Don't search far left of kR.
+                        search_x0 = max(int(w * 0.12), left_bound - 5)
                     else:
                         # Fix 13: increase left expansion to catch weapon
                         # handles/stocks that extend well left of kR.
@@ -4164,7 +4263,7 @@ class KillfeedDetector(BaseDetector):
                     # most of the gap and extends left of kR, so be loose.
                     # For large gaps (>120) text leaks in, so be tight.
                     # Fix 13: align with search zone expansion.
-                    if gap <= 140:
+                    if gap <= 140 and not ktr_skip_bright:
                         left_filter_x = left_bound - max(20, int(gap * 0.35))
                     else:
                         left_filter_x = left_bound - max(5, int(gap * 0.04))
@@ -4239,7 +4338,7 @@ class KillfeedDetector(BaseDetector):
                         # Left margin: generous for small gaps (gun
                         # extends left), tight for large gaps (text leak).
                         # Fix 13: align with search zone expansion.
-                        if gap <= 140:
+                        if gap <= 140 and not ktr_skip_bright:
                             left_margin = max(20, int(gap * 0.30))
                         else:
                             left_margin = max(8, int(gap * 0.10))
@@ -4278,7 +4377,7 @@ class KillfeedDetector(BaseDetector):
                         original_kR = int(round(killer_text_right))
                         icon_extends_left = icon_x0 < original_kR
                         if icon_extends_left and ktr_skip_bright:
-                            guard_margin = max(25, int(gap * 0.45))
+                            guard_margin = 5  # kR bright — could be text; tight guard
                         elif icon_extends_left:
                             guard_margin = max(20, int(gap * 0.35))
                         else:
