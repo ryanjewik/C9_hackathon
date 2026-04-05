@@ -34,9 +34,9 @@ public class TeamAdminService {
     }
 
     @Transactional
-    public Optional<Team> createNewTeam(String name, UUID ownerId) {
+    public Team createNewTeam(String name, UUID ownerId) {
         if (name == null || name.isBlank() || ownerId == null) {
-            return Optional.empty();
+            throw new com.example.identity_service.exception.BadRequestException("invalid_team_name_or_owner");
         }
 
         Team team = new Team();
@@ -45,9 +45,9 @@ public class TeamAdminService {
 
         try {
             Team saved = teamAdminRepository.save(team);
-            return Optional.of(saved);
+            return saved;
         } catch (DataIntegrityViolationException ex) {
-            return Optional.empty();
+            throw new com.example.identity_service.exception.ConflictException("team_name_taken");
         }
     }
 

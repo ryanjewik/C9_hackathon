@@ -26,34 +26,34 @@ public class AuthService {
     /**
      * Authenticate the user by username/password and return a JWT if successful.
      */
-    public Optional<String> authenticate(String username, String password){
+    public String authenticate(String username, String password){
         Optional<User> userOpt = loginRepository.findByUsername(username);
         if (userOpt.isEmpty()){
-            return Optional.empty();
+            throw new com.example.identity_service.exception.UnauthorizedException("invalid_credentials");
         }
         User user = userOpt.get();
         if (!passwordEncoder.matches(password, user.getPasswordHash())){
-            return Optional.empty();
+            throw new com.example.identity_service.exception.UnauthorizedException("invalid_credentials");
         }
 
         String token = jwtService.generateToken(user.getId(), user.getUsername());
-        return Optional.of(token);
+        return token;
     }
 
     /**
      * Register a new user. Returns Optional JWT when successful.
      * If username or email already exists, returns Optional.empty().
      */
-    public Optional<String> register(String username, String email, String password){
+    public String register(String username, String email, String password){
         if (username == null || username.isBlank() || email == null || email.isBlank() || password == null || password.isBlank()){
-            return Optional.empty();
+            throw new com.example.identity_service.exception.BadRequestException("username_email_password_required");
         }
 
         if (loginRepository.findByUsername(username).isPresent()){
-            return Optional.empty();
+            throw new com.example.identity_service.exception.ConflictException("username_taken");
         }
         if (loginRepository.findByEmail(email).isPresent()){
-            return Optional.empty();
+            throw new com.example.identity_service.exception.ConflictException("email_taken");
         }
 
         String hash = passwordEncoder.encode(password);
@@ -62,6 +62,6 @@ public class AuthService {
         User saved = loginRepository.save(user);
 
         String token = jwtService.generateToken(saved.getId(), saved.getUsername());
-        return Optional.of(token);
+        return token;
     }
 }

@@ -9,6 +9,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 import com.example.identity_service.service.AuthService;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Optional;
 
@@ -18,6 +20,7 @@ import java.util.Optional;
 public class AuthController {
     
     private final AuthService authService;
+    private static final Logger log = LoggerFactory.getLogger(AuthController.class);
 
     public AuthController(AuthService authService) {
         this.authService = authService;
@@ -27,12 +30,7 @@ public class AuthController {
     public ResponseEntity<?> login(@RequestBody LoginDto credentials){
         String username = credentials.getUsername();
         String password = credentials.getPassword();
-        Optional<String> tokenOpt = authService.authenticate(username, password);
-        if (tokenOpt.isEmpty()){
-            return ResponseEntity.status(401).body(Map.of("error", "invalid_credentials"));
-        }
-
-        String token = tokenOpt.get();
+        String token = authService.authenticate(username, password);
         return ResponseEntity.ok(Map.of(
             "access_token", token,
             "token_type", "Bearer"
@@ -44,13 +42,7 @@ public class AuthController {
         String username = body.getUsername();
         String email = body.getEmail();
         String password = body.getPassword();
-
-        Optional<String> tokenOpt = authService.register(username, email, password);
-        if (tokenOpt.isEmpty()){
-            return ResponseEntity.status(409).body(Map.of("error", "username_or_email_taken_or_invalid"));
-        }
-
-        String token = tokenOpt.get();
+        String token = authService.register(username, email, password);
         return ResponseEntity.status(201).body(Map.of(
             "access_token", token,
             "token_type", "Bearer"

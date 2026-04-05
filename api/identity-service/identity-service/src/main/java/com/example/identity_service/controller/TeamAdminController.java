@@ -58,11 +58,7 @@ public class TeamAdminController {
         }
 
         String name = team.getName();
-        Optional<Team> createdTeam = teamAdminService.createNewTeam(name, ownerId);
-        if (createdTeam.isEmpty()){
-            return ResponseEntity.status(400).body(Map.of("error", "failed_to_create_team"));
-        }
-        Team t = createdTeam.get();
+        Team t = teamAdminService.createNewTeam(name, ownerId);
         return ResponseEntity.status(201).body(Map.of(
             "team_id", t.getId(),
             "team_name", t.getName(),
