@@ -49,6 +49,25 @@ public class JwtService {
     }
 
     /**
+     * Generate a token for an API key / team context. Subject will be the team id.
+     * expirationMs controls TTL for this token.
+     */
+    public String generateTokenForApiKey(UUID teamId, String keyPrefix, long expirationMsOverride) {
+        Instant now = Instant.now();
+        Date issuedAt = Date.from(now);
+        Date expiry = Date.from(now.plusMillis(expirationMsOverride));
+
+        return Jwts.builder()
+                .setSubject(teamId.toString())
+                .claim("key_prefix", keyPrefix)
+                .claim("apikey", true)
+                .setIssuedAt(issuedAt)
+                .setExpiration(expiry)
+                .signWith(key, SignatureAlgorithm.HS256)
+                .compact();
+    }
+
+    /**
      * Validate a JWT and return the user id subject if valid.
      */
     public Optional<UUID> validateTokenAndGetUserId(String token) {

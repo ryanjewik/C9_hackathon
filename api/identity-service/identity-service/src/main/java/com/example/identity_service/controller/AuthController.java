@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 import com.example.identity_service.service.AuthService;
+import com.example.identity_service.dto.ApiKeyTokenRequestDto;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,9 +22,11 @@ public class AuthController {
     
     private final AuthService authService;
     private static final Logger log = LoggerFactory.getLogger(AuthController.class);
+    private final long apiKeyTokenTtlMs;
 
-    public AuthController(AuthService authService) {
+    public AuthController(AuthService authService, @org.springframework.beans.factory.annotation.Value("${jwt.apikey-expiration-ms:900000}") long apiKeyTokenTtlMs) {
         this.authService = authService;
+        this.apiKeyTokenTtlMs = apiKeyTokenTtlMs;
     }
 
     @PostMapping("/login")
@@ -46,6 +49,18 @@ public class AuthController {
         return ResponseEntity.status(201).body(Map.of(
             "access_token", token,
             "token_type", "Bearer"
+        ));
+    }
+
+    @PostMapping("/token")
+    public ResponseEntity<?> tokenByApiKey(@RequestBody ApiKeyTokenRequestDto req){
+        // Accept plaintext API key in the request body as { "key": "<plaintext>" }
+        String key = req.getKey();
+        String token = authService.tokenForApiKey(key);
+        return ResponseEntity.ok(Map.of(
+            "access_token", token,
+            "token_type", "Bearer",
+            "expires_in", Long.valueOf(apiKeyTokenTtlMs / 1000)
         ));
     }
 }
