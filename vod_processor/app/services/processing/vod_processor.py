@@ -4196,15 +4196,16 @@ class KillfeedDetector(BaseDetector):
                     # For very large gaps the gun sits fully inside
                     # kR..vL — don't search left of kR to avoid
                     # killer-name text on bright/yellow backgrounds.
-                    # Also skip the killer's agent portrait icon
-                    # (~25-30px circle) that sits immediately right
-                    # of the killer name text.
                     if gap > 140:
-                        portrait_skip = min(30, int(gap * 0.18))
-                        search_x0 = max(int(w * 0.12), left_bound + portrait_skip)
+                        search_x0 = max(int(w * 0.12), left_bound)
+                    elif ktr_skip_bright and gap < 110:
+                        # Small gap + bright kR: weapon stock likely
+                        # extends left of kR.  Expand generously.
+                        expand_ktr = max(20, int(gap * 0.35))
+                        search_x0 = max(int(w * 0.12), left_bound - expand_ktr)
                     elif ktr_skip_bright:
-                        # Bright unsaturated pixels at kR — could be text,
-                        # not weapon.  Don't search far left of kR.
+                        # Larger gap + bright kR: weapon fits in gap,
+                        # bright pixels are likely killer text.
                         search_x0 = max(int(w * 0.12), left_bound - 5)
                     else:
                         # Fix 13: increase left expansion to catch weapon
@@ -4248,6 +4249,12 @@ class KillfeedDetector(BaseDetector):
                             bp_valid.append((bx, by, bw, bh, area))
 
                     n_contours_total = len(bp_valid)
+                    # Dump all contours for large-gap crops (portrait debug)
+                    if gap > 140 and bp_valid:
+                        for _i, c in enumerate(bp_valid):
+                            print(f"[CROP-DBG] crop#{crop_num} contour[{_i}]: "
+                                  f"bx={c[0]} by={c[1]} bw={c[2]} bh={c[3]} "
+                                  f"area={c[4]:.0f} cx={c[0]+c[2]//2}")
                     # Filter contours near the victim text — the headshot
                     # icon sits just left of vL and its contours must be
                     # excluded or they merge with the weapon cluster.
@@ -4271,6 +4278,49 @@ class KillfeedDetector(BaseDetector):
                         bp_valid = [c for c in bp_valid
                                     if (c[0] + c[2] // 2) >= left_filter_x]
                     n_after_left = len(bp_valid)
+
+                    # Filter agent portrait icon — a small roughly-square
+                    # bright circle sitting just right of kR in large-gap
+                    # rows.  It passes gray>180 + low-sat filters but is
+                    # not part of the weapon.
+                    if gap > 140 and bp_valid:
+                        portrait_zone_right = left_bound + min(35, int(gap * 0.22))
+                        bp_before_portrait = len(bp_valid)
+                        # Debug: log all contours in portrait zone
+                        for c in bp_valid:
+                            bx, by, bw_c, bh_c, area_c = c
+                            cx = bx + bw_c // 2
+                            if cx <= portrait_zone_right:
+                                aspect = bw_c / max(bh_c, 1)
+                                fill = area_c / max(bw_c * bh_c, 1)
+                                print(f"[CROP-DBG] crop#{crop_num} portrait-zone contour: "
+                                      f"bx={bx} by={by} bw={bw_c} bh={bh_c} "
+                                      f"area={area_c:.0f} aspect={aspect:.2f} "
+                                      f"fill={fill:.2f} cx={cx}")
+                        kept = []
+                        for c in bp_valid:
+                            bx, by, bw_c, bh_c, area_c = c
+                            cx = bx + bw_c // 2
+                            # Only consider contours centered in the
+                            # portrait zone (just right of left_bound).
+                            if cx <= portrait_zone_right:
+                                aspect = bw_c / max(bh_c, 1)
+                                fill = area_c / max(bw_c * bh_c, 1)
+                                # Portrait: roughly square, compact fill,
+                                # not too large.
+                                if (0.55 <= aspect <= 1.8
+                                        and fill >= 0.40
+                                        and bw_c <= 35
+                                        and bh_c <= h * 0.85):
+                                    print(f"[CROP-DBG] crop#{crop_num} portrait filter DROP: "
+                                          f"bx={bx} bw={bw_c} bh={bh_c}")
+                                    continue  # drop portrait contour
+                            kept.append(c)
+                        bp_valid = kept
+                        if len(bp_valid) < bp_before_portrait:
+                            print(f"[CROP-DBG] crop#{crop_num} portrait filter: "
+                                  f"dropped {bp_before_portrait - len(bp_valid)} "
+                                  f"contour(s) near kR (zone<={portrait_zone_right})")
 
                     if not bp_valid:
                         print(f"[CROP-DBG] crop#{crop_num} Strategy1 brightness: contours {n_contours_total}->right_filt {n_after_right}->left_filt {n_after_left}")
@@ -4330,6 +4380,33 @@ class KillfeedDetector(BaseDetector):
                                 icon_x0 = new_x0
                                 icon_x1 = new_x1
 
+                        # Portrait trim: for large-gap rows the agent
+                        # portrait can fuse with the weapon contour.
+                        # Scan the left edge for a vertical valley
+                        # (column with few white pixels) and trim there.
+                        if gap > 140 and icon_x0 < left_bound + 15:
+                            trim_start = max(0, icon_x0)
+                            trim_end = min(icon_x0 + 40, icon_x1 - 10)
+                            if trim_end > trim_start + 5:
+                                col_sums = np.sum(
+                                    thresh[0:h, trim_start:trim_end] > 0,
+                                    axis=0)
+                                if len(col_sums) > 5:
+                                    min_idx = int(np.argmin(col_sums))
+                                    min_val = int(col_sums[min_idx])
+                                    mean_val = float(np.mean(col_sums))
+                                    print(f"[CROP-DBG] crop#{crop_num} "
+                                          f"portrait-trim scan: cols "
+                                          f"{trim_start}-{trim_end}, "
+                                          f"min_col={trim_start+min_idx} "
+                                          f"sum={min_val} mean={mean_val:.1f}")
+                                    if min_val <= max(1, mean_val * 0.3):
+                                        new_x0 = trim_start + min_idx + 1
+                                        print(f"[CROP-DBG] crop#{crop_num} "
+                                              f"portrait-trim: icon_x0 "
+                                              f"{icon_x0} -> {new_x0}")
+                                        icon_x0 = new_x0
+
                         # Clamp to OCR boundaries — slightly generous
                         # on the left (weapons extend left of ktr) and
                         # allow a small right overshoot (gun barrels can
@@ -4340,6 +4417,8 @@ class KillfeedDetector(BaseDetector):
                         # Fix 13: align with search zone expansion.
                         if gap <= 140 and not ktr_skip_bright:
                             left_margin = max(20, int(gap * 0.30))
+                        elif ktr_skip_bright and gap < 110:
+                            left_margin = max(15, int(gap * 0.30))
                         else:
                             left_margin = max(8, int(gap * 0.10))
                         right_margin = max(15, int(gap * 0.20))
@@ -4376,8 +4455,10 @@ class KillfeedDetector(BaseDetector):
                         # keep the tight 4px guard.
                         original_kR = int(round(killer_text_right))
                         icon_extends_left = icon_x0 < original_kR
-                        if icon_extends_left and ktr_skip_bright:
-                            guard_margin = 5  # kR bright — could be text; tight guard
+                        if icon_extends_left and ktr_skip_bright and gap < 110:
+                            guard_margin = max(20, int(gap * 0.35))
+                        elif icon_extends_left and ktr_skip_bright:
+                            guard_margin = 5
                         elif icon_extends_left:
                             guard_margin = max(20, int(gap * 0.35))
                         else:
