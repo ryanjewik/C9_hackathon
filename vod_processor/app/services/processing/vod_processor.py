@@ -4453,6 +4453,10 @@ class KillfeedDetector(BaseDetector):
                         # When ktr_skip_bright also fired, allow even more
                         # (gap*0.45).  For clusters entirely right of kR,
                         # keep the tight 4px guard.
+                        # Fix 15: for non-ktr icon_extends_left, contours
+                        # may be text+weapon merged blobs (bright colored
+                        # text passes gray>180). Use tight guard to avoid
+                        # killer text bleed.
                         original_kR = int(round(killer_text_right))
                         icon_extends_left = icon_x0 < original_kR
                         if icon_extends_left and ktr_skip_bright and gap < 110:
@@ -4460,7 +4464,7 @@ class KillfeedDetector(BaseDetector):
                         elif icon_extends_left and ktr_skip_bright:
                             guard_margin = 5
                         elif icon_extends_left:
-                            guard_margin = max(20, int(gap * 0.35))
+                            guard_margin = max(8, int(gap * 0.10))
                         else:
                             guard_margin = 4
                         if x0 < original_kR - guard_margin:
