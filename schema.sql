@@ -183,7 +183,8 @@ CREATE TABLE esports_player_games (
     fk INTEGER,  -- First Kills
     fd INTEGER,  -- First Deaths
     opponent_roster_id INTEGER REFERENCES esports_rosters(id),
-    opponent_team_id INTEGER REFERENCES esports_teams(id)
+    opponent_team_id INTEGER REFERENCES esports_teams(id),
+    UNIQUE(match_id, game_id, player_id)
 );
 
 -- Create indexes for common queries

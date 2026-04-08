@@ -260,7 +260,8 @@ class VLRParser:
         return max_page
     
     @staticmethod
-    def parse_tournament(soup: BeautifulSoup, event_id: int, tier: Optional[str] = None) -> Optional[Tournament]:
+    def parse_tournament(soup: BeautifulSoup, event_id: int, tier: Optional[str] = None,
+                         status_override: Optional[str] = None) -> Optional[Tournament]:
         """Parse tournament/event page for tournament info."""
         try:
             # Name
@@ -306,14 +307,17 @@ class VLRParser:
                     if value:
                         location = value.get_text(strip=True)
             
-            # Status
-            today = date.today()
-            if end_date and today > end_date:
-                status = 'completed'
-            elif start_date and today < start_date:
-                status = 'upcoming'
+            # Status — use override if provided (e.g., scraper confirmed 'completed' from events list)
+            if status_override:
+                status = status_override
             else:
-                status = 'ongoing'
+                today = date.today()
+                if end_date and today > end_date:
+                    status = 'completed'
+                elif start_date and today < start_date:
+                    status = 'upcoming'
+                else:
+                    status = 'ongoing'
             
             return Tournament(
                 id=event_id,
@@ -424,12 +428,15 @@ class VLRParser:
     
     @staticmethod
     def parse_matches_list(soup: BeautifulSoup) -> List[int]:
-        """Parse matches list page to get match IDs."""
+        """Parse matches list page to get completed match IDs only."""
         match_ids = []
         
-        # Find all match links
-        for link in soup.select('a[href*="/"]'):
-            href = link.get('href', '')
+        # Only collect match-item anchors that VLR marks as completed
+        for item in soup.select('a.match-item'):
+            # Skip matches not yet completed (live, upcoming, etc.)
+            if not item.select_one('.ml.mod-completed'):
+                continue
+            href = item.get('href', '')
             # Match URLs like /542195/paper-rex-vs-xi-lai-gaming...
             match = re.search(r'^/(\d{5,})/[a-z]', href)
             if match:
@@ -1174,13 +1181,14 @@ class Database:
     
     # Player game stats operations
     def insert_player_game_stats(self, stats: PlayerGameStats):
-        """Insert player game stats."""
+        """Insert player game stats. No-ops if the row already exists (idempotent)."""
         with self.conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO esports_player_games (match_id, game_id, player_id, team_id, roster_id,
                     tournament_id, map, agent, rating, acs, kills, deaths, assists, kast, adr,
                     hs_percent, fk, fd, opponent_roster_id, opponent_team_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (match_id, game_id, player_id) DO NOTHING
             """, (stats.match_id, stats.game_id, stats.player_id, stats.team_id, stats.roster_id,
                   stats.tournament_id, stats.map_name, stats.agent, stats.rating, stats.acs,
                   stats.kills, stats.deaths, stats.assists, stats.kast, stats.adr,
@@ -1430,6 +1438,8 @@ class Database:
         logger.info(f"Updated stats for {len(player_ids)} players")
 
 
+
+
 # ============================================================================
 # Main Scraper
 # ============================================================================
@@ -1495,7 +1505,8 @@ class VLRScraper:
         
         return player
     
-    def scrape_tournament(self, event_id: int, tier: Optional[str] = None) -> bool:
+    def scrape_tournament(self, event_id: int, tier: Optional[str] = None,
+                           status_override: Optional[str] = None) -> bool:
         """Scrape a complete tournament."""
         logger.info(f"Scraping tournament {event_id}")
         
@@ -1504,7 +1515,7 @@ class VLRScraper:
         if not soup:
             return False
         
-        tournament = self.parser.parse_tournament(soup, event_id, tier)
+        tournament = self.parser.parse_tournament(soup, event_id, tier, status_override)
         if not tournament:
             return False
         
@@ -1748,7 +1759,8 @@ class VLRScraper:
                 continue
             
             logger.info(f"Processing: {event_name} (ID: {event_id})")
-            self.scrape_tournament(event_id, tier_name)
+            # Pass status_override='completed' because parse_completed_events already confirmed it
+            self.scrape_tournament(event_id, tier_name, status_override='completed')
     
     def close(self):
         """Clean up resources."""

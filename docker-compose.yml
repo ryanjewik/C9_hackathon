@@ -112,12 +112,6 @@ services:
       - ./vod_processor/app:/app/app:ro
       - ./vod_processor/config:/app/config:ro
       - ./vod_processor:/app/vod_processor:ro
-      - ./run_processing_db.py:/app/run_processing_db.py:ro
-      - ./run_all_vod_tests.py:/app/run_all_vod_tests.py:ro
-      - ./extract_crops.py:/app/extract_crops.py:ro
-      - ./test_team_detect.py:/app/test_team_detect.py:ro
-      - ./debug_score_roi.py:/app/debug_score_roi.py:ro
-      - ./debug_rois.py:/app/debug_rois.py:ro
       # Mount valorant_resources so model + labels are available
       - ../valorant_resources:/app/valorant_resources:ro
     depends_on:
@@ -162,6 +156,49 @@ services:
       - redis
       - postgres
     restart: "no"
+
+  # ===========================================
+  # VLR Scraper: Celery Worker
+  # ===========================================
+  scraper-worker:
+    build:
+      context: ./scraping_job
+      dockerfile: Dockerfile
+    image: vlr-scraper:latest
+    container_name: vlr-scraper-worker
+    command: celery -A celery_app worker --loglevel=info --concurrency=1
+    environment:
+      - PYTHONUNBUFFERED=1
+      - REDIS_URL=redis://redis:6379/1
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-cloud9}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+  # ===========================================
+  # VLR Scraper: Celery Beat Scheduler
+  # ===========================================
+  scraper-beat:
+    image: vlr-scraper:latest
+    container_name: vlr-scraper-beat
+    command: celery -A celery_app beat --loglevel=info
+    environment:
+      - PYTHONUNBUFFERED=1
+      - REDIS_URL=redis://redis:6379/1
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-cloud9}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+    depends_on:
+      - redis
+      - scraper-worker
+    restart: unless-stopped
 
   # ===========================================
   # Redis for Task Queue
