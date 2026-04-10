@@ -4367,6 +4367,14 @@ class KillfeedDetector(BaseDetector):
                         icon_x0 = best[0]
                         icon_x1 = best[0] + best[2]
 
+                        # Fix 19: if the seed contour is a merged
+                        # text+weapon blob starting far left of kR,
+                        # clip its left edge to kR so text pixels
+                        # don't consume the MAX_ICON_W budget.
+                        kR_int = int(round(killer_text_right))
+                        if icon_x0 < kR_int - 35 and icon_x1 > kR_int:
+                            icon_x0 = kR_int
+
                         cluster_gap = max(12, int(h * 0.40))
                         MAX_ICON_W = min(140, max(int(gap * 0.75), 80))
                         for c in bp_valid[1:]:
@@ -4384,7 +4392,10 @@ class KillfeedDetector(BaseDetector):
                         # portrait can fuse with the weapon contour.
                         # Scan the left edge for a vertical valley
                         # (column with few white pixels) and trim there.
-                        if gap > 140 and icon_x0 < left_bound + 15:
+                        # Fix 16a: tighten position check (+15 -> +8) to
+                        # avoid false positives on weapon-only contours
+                        # that happen to start slightly right of kR.
+                        if gap > 140 and icon_x0 < left_bound + 8:
                             trim_start = max(0, icon_x0)
                             trim_end = min(icon_x0 + 40, icon_x1 - 10)
                             if trim_end > trim_start + 5:
@@ -4433,9 +4444,6 @@ class KillfeedDetector(BaseDetector):
                         if icon_x1 > hs_right_limit:
                             icon_x1 = hs_right_limit
 
-                        # If the icon cluster is still wider than
-                        # MAX_ICON_W (e.g. a single giant contour that
-                        # merged weapon + headshot), trim from the right.
                         if (icon_x1 - icon_x0) > MAX_ICON_W:
                             icon_x1 = icon_x0 + MAX_ICON_W
 
@@ -4464,7 +4472,10 @@ class KillfeedDetector(BaseDetector):
                         elif icon_extends_left and ktr_skip_bright:
                             guard_margin = 5
                         elif icon_extends_left:
-                            guard_margin = max(8, int(gap * 0.10))
+                            # Fix 16b: for non-ktr, bright blobs left of
+                            # kR are likely killer-text, not weapon. Use
+                            # tight constant guard to prevent text bleed.
+                            guard_margin = 4
                         else:
                             guard_margin = 4
                         if x0 < original_kR - guard_margin:
