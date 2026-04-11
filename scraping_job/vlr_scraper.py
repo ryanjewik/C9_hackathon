@@ -45,7 +45,8 @@ DB_CONFIG = {
     "database": os.getenv("POSTGRES_DB", "cloud9"),
     "user": os.getenv("POSTGRES_USER", "postgres"),
     "password": os.getenv("POSTGRES_PASSWORD", "postgres"),
-    "port": int(os.getenv("POSTGRES_PORT", "5432"))
+    "port": int(os.getenv("POSTGRES_PORT", "5432")),
+    "connect_timeout": 10,
 }
 
 
@@ -1825,8 +1826,9 @@ def main():
         elif args.tier:
             scraper.scrape_events_by_tier(args.tier, args.limit)
         elif not args.setup_db:
-            # Default: scrape VCT tier 60
-            scraper.scrape_events_by_tier(60, limit=1)
+            # Default: scrape all tiers
+            for tier_id, tier_name in TIERS.items():
+                scraper.scrape_events_by_tier(tier_id, args.limit)
     
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
