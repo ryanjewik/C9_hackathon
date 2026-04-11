@@ -1427,6 +1427,22 @@ class Database:
                 player_id
             ))
     
+    def update_player_stats_for_matches(self, match_ids: List[int]):
+        """Update stats only for players who appeared in the given matches."""
+        if not match_ids:
+            return
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT player_id FROM esports_player_games WHERE match_id = ANY(%s)",
+                (match_ids,)
+            )
+            player_ids = [row[0] for row in cur.fetchall()]
+
+        for player_id in player_ids:
+            self.update_player_stats(player_id)
+
+        logger.info(f"Updated stats for {len(player_ids)} players")
+
     def update_all_player_stats(self):
         """Update stats for all players in the database."""
         with self.conn.cursor() as cur:

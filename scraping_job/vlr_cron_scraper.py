@@ -130,8 +130,8 @@ class CronScraper(VLRScraper):
             self.scrape_match(match_id, event_id)
 
         if new_ids:
-            logger.info(f"  Updating player stats...")
-            self.db.update_all_player_stats()
+            logger.info(f"  Updating player stats for {len(new_ids)} new match(es)...")
+            self.db.update_player_stats_for_matches(new_ids)
 
         self.db.commit()
 
@@ -204,8 +204,12 @@ class CronScraper(VLRScraper):
                 self.db.add_player_title(player_id, event_id)
             logger.info(f"  Awarded titles to {len(winning_players)} players on the winning team")
 
-        logger.info(f"  Updating player stats...")
-        self.db.update_all_player_stats()
+        # Update stats only for players in this tournament's matches
+        with self.db.conn.cursor() as _cur:
+            _cur.execute("SELECT id FROM esports_matches WHERE tournament_id = %s", (event_id,))
+            tournament_match_ids = [r[0] for r in _cur.fetchall()]
+        logger.info(f"  Updating player stats for {len(tournament_match_ids)} match(es)...")
+        self.db.update_player_stats_for_matches(tournament_match_ids)
         self.db.commit()
 
     # ------------------------------------------------------------------

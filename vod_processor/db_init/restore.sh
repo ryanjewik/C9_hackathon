@@ -1,4 +1,4 @@
-﻿#!/bin/sh
+#!/bin/sh
 # Restore the backup.sql database
 # This script handles either a pg_restore custom dump or a plain SQL file.
 
