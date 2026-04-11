@@ -5,9 +5,9 @@ Celery tasks for VLR scraping.
 import os
 import logging
 
-from scraping_job.celery_app import celery_app
-from scraping_job.vlr_cron_scraper import CronScraper
-from scraping_job.vlr_scraper import DB_CONFIG
+from celery_app import celery_app
+from vlr_cron_scraper import CronScraper
+from vlr_scraper import DB_CONFIG
 
 logger = logging.getLogger(__name__)
 
