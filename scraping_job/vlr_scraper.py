@@ -439,7 +439,10 @@ class VLRParser:
                 continue
             href = item.get('href', '')
             # Match URLs like /542195/paper-rex-vs-xi-lai-gaming...
-            match = re.search(r'^/(\d{5,})/[a-z]', href)
+            # Note: slug may start with a digit (e.g. /645476/100-thieves-vs-...)
+            # so we only require 5+ digits followed by a slash — no [a-z] guard needed
+            # since we're already scoped to a.match-item elements.
+            match = re.search(r'^/(\d{5,})/', href)
             if match:
                 match_id = int(match.group(1))
                 if match_id not in match_ids:
