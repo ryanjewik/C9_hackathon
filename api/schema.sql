@@ -39,7 +39,7 @@ CREATE TABLE esports_teams (
 -- Tournament placements
 CREATE TABLE esports_tournament_placements (
     id SERIAL PRIMARY KEY,
-    tournament_id INTEGER REFERENCES esports_tournaments(id),
+    tournament_id INTEGER REFERENCES esports_tournaments(id) ON DELETE CASCADE,
     placement VARCHAR(20),  -- e.g., "1st", "5th-6th", "7th-8th"
     esports_team_id INTEGER REFERENCES esports_teams(id),
     prize_money VARCHAR(50),  -- e.g., "$1,000,000"
@@ -105,7 +105,7 @@ CREATE TABLE esports_matches (
     phase VARCHAR(100),  -- e.g., "Group Stage: Opening (A)"
     date TIMESTAMP,
     patch VARCHAR(20),
-    tournament_id INTEGER REFERENCES esports_tournaments(id),
+    tournament_id INTEGER REFERENCES esports_tournaments(id) ON DELETE CASCADE,
     tournament_name VARCHAR(255),
     team_1_name VARCHAR(255),
     team_1_id INTEGER REFERENCES esports_teams(id),
@@ -125,7 +125,7 @@ CREATE TABLE esports_matches (
 -- Map veto table
 CREATE TABLE esports_map_veto (
     id SERIAL PRIMARY KEY,
-    match_id INTEGER REFERENCES esports_matches(id),
+    match_id INTEGER REFERENCES esports_matches(id) ON DELETE CASCADE,
     type VARCHAR(10) CHECK (type IN ('ban', 'pick')),
     team_id INTEGER REFERENCES esports_teams(id),
     map_selected VARCHAR(50),
@@ -150,7 +150,7 @@ CREATE TABLE esports_rosters (
 -- Game scores table (individual maps)
 CREATE TABLE esports_game_scores (
     id INTEGER PRIMARY KEY,  -- Game ID from URL param
-    match_id INTEGER REFERENCES esports_matches(id),
+    match_id INTEGER REFERENCES esports_matches(id) ON DELETE CASCADE,
     team_1_score INTEGER,
     team_2_score INTEGER,
     team_1_id INTEGER REFERENCES esports_teams(id),
@@ -164,12 +164,12 @@ CREATE TABLE esports_game_scores (
 -- Player game stats table
 CREATE TABLE esports_player_games (
     id SERIAL PRIMARY KEY,
-    match_id INTEGER REFERENCES esports_matches(id),
-    game_id INTEGER REFERENCES esports_game_scores(id),
+    match_id INTEGER REFERENCES esports_matches(id) ON DELETE CASCADE,
+    game_id INTEGER REFERENCES esports_game_scores(id) ON DELETE CASCADE,
     player_id INTEGER REFERENCES esports_players(id),
     team_id INTEGER REFERENCES esports_teams(id),
     roster_id INTEGER REFERENCES esports_rosters(id),
-    tournament_id INTEGER REFERENCES esports_tournaments(id),
+    tournament_id INTEGER REFERENCES esports_tournaments(id) ON DELETE CASCADE,
     map VARCHAR(50),
     agent VARCHAR(50),
     rating DECIMAL(4, 2),
@@ -183,7 +183,8 @@ CREATE TABLE esports_player_games (
     fk INTEGER,  -- First Kills
     fd INTEGER,  -- First Deaths
     opponent_roster_id INTEGER REFERENCES esports_rosters(id),
-    opponent_team_id INTEGER REFERENCES esports_teams(id)
+    opponent_team_id INTEGER REFERENCES esports_teams(id),
+    UNIQUE(match_id, game_id, player_id)
 );
 
 -- Create indexes for common queries
