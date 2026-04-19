@@ -36,6 +36,11 @@ testing/api_testing/.venv311/
 .env
 **/.env
 
+# Ignore identity service keys and JWKS (dev only)
+identity-service/keys/
+identity-service/src/main/resources/static/.well-known/jwks.json
+api/secrets/
+
 # python caches
 **/__pycache__/
 
