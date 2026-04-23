@@ -57,6 +57,13 @@ public class JwtAuthFilter implements GlobalFilter {
             return chain.filter(exchange);
         }
 
+        // Allow unauthenticated access to public identity endpoints such as
+        // POST /auth/register and POST /auth/login so clients can register/login
+        // without a JWT. Keep other identity endpoints protected.
+        if (isIdentity && (path.equals("/auth/register") || path.equals("/auth/login") || path.equals("/auth/token") || path.startsWith("/auth/public/"))) {
+            return chain.filter(exchange);
+        }
+
         HttpHeaders headers = exchange.getRequest().getHeaders();
         String auth = headers.getFirst(HttpHeaders.AUTHORIZATION);
         if (auth == null || !auth.startsWith("Bearer ")) {

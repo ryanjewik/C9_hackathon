@@ -39,7 +39,7 @@ services:
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
     ports:
-      - "8080:8080"
+      - "18080:8080"
     depends_on:
       data-service-1:
         condition: service_healthy
@@ -63,6 +63,8 @@ services:
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
       SERVER_PORT: 8081
+      JWT_ISSUER: ${JWT_ISSUER}
+      JWT_AUDIENCE: ${JWT_AUDIENCE}
     depends_on:
       postgres:
         condition: service_healthy

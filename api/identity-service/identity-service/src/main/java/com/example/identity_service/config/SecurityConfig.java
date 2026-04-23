@@ -14,6 +14,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusReactiveJwtDecoder;
+import java.security.interfaces.RSAPublicKey;
+import com.example.identity_service.service.KeyService;
 
 @Configuration
 @EnableWebFluxSecurity
@@ -42,8 +44,21 @@ public class SecurityConfig {
     }
 
     @Bean
-    public ReactiveJwtDecoder reactiveJwtDecoder(@Value("${jwt.secret}") String secret) {
-        // Use the same HMAC secret used to sign tokens in JwtService
+    public ReactiveJwtDecoder reactiveJwtDecoder(@Value("${jwt.secret:}") String secret, KeyService keyService) {
+        // If KeyService provides an RSA public key, use it to validate RS256 tokens.
+        try {
+            RSAPublicKey pub = keyService != null ? keyService.getPublicKey() : null;
+            if (pub != null) {
+                return NimbusReactiveJwtDecoder.withPublicKey(pub).build();
+            }
+        } catch (Exception e) {
+            // fall through to HMAC fallback
+        }
+
+        // Fallback to HMAC-based JWTs using the configured secret
+        if (secret == null || secret.isEmpty()) {
+            throw new IllegalArgumentException("jwt.secret must be set when no RSA key is available");
+        }
         SecretKeySpec key = new SecretKeySpec(secret.getBytes(), "HmacSHA256");
         return NimbusReactiveJwtDecoder.withSecretKey(key).build();
     }
