@@ -1,5 +1,7 @@
 package com.example.gateway_service.caching;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
@@ -27,6 +29,7 @@ import java.util.Base64;
 @Order(Ordered.HIGHEST_PRECEDENCE + 40)
 public class CacheFilter implements GlobalFilter {
 
+    private static final Logger log = LoggerFactory.getLogger(CacheFilter.class);
     private final ReactiveStringRedisTemplate redis;
     private final long ttlSeconds;
     // index and limit for eviction
@@ -94,14 +97,16 @@ public class CacheFilter implements GlobalFilter {
                         statusCode = 200;
                     }
                 }
+                log.info("Cache HIT: key={}", cacheKey);
                 response.setStatusCode(HttpStatus.valueOf(statusCode));
                 response.getHeaders().set(HttpHeaders.CONTENT_TYPE, contentType);
                 return response.writeWith(Mono.just(response.bufferFactory().wrap(body)));
             } catch (Exception e){
                 return Mono.empty();
             }
-        }).switchIfEmpty(Mono.defer(()-> { //if cache miss
-            ServerHttpResponse original = exchange.getResponse(); //read buffer
+        }).switchIfEmpty(Mono.defer(()-> { // if cache miss
+            log.debug("Cache MISS: key={}", cacheKey);
+            ServerHttpResponse original = exchange.getResponse(); // read buffer
             ServerHttpResponseDecorator decorated = new ServerHttpResponseDecorator(original){
                     @Override
                     @SuppressWarnings("unchecked")
@@ -124,6 +129,7 @@ public class CacheFilter implements GlobalFilter {
                                     }
                                     String payload = statusCode + "|" + contentType + "|" + Base64.getEncoder().encodeToString(content);
                                     long now = System.currentTimeMillis();
+                                    log.debug("Cache STORE: key={} status={}", cacheKey, statusCode);
                                     // set value, add to index, then evict oldest if over limit (runs async)
                                     redis.opsForValue().set(cacheKey, payload, Duration.ofSeconds(ttlSeconds))
                                         .then(redis.opsForZSet().add(INDEX_KEY, cacheKey, (double) now))

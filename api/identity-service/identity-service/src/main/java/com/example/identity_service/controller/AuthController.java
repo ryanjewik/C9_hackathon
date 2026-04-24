@@ -33,7 +33,9 @@ public class AuthController {
     public ResponseEntity<?> login(@RequestBody LoginDto credentials){
         String username = credentials.getUsername();
         String password = credentials.getPassword();
+        log.info("Login attempt: username={}", username);
         String token = authService.authenticate(username, password);
+        log.info("Login success: username={}", username);
         return ResponseEntity.ok(Map.of(
             "access_token", token,
             "token_type", "Bearer"
@@ -45,7 +47,9 @@ public class AuthController {
         String username = body.getUsername();
         String email = body.getEmail();
         String password = body.getPassword();
+        log.info("Registration attempt: username={} email={}", username, email);
         String token = authService.register(username, email, password);
+        log.info("Registration success: username={}", username);
         return ResponseEntity.status(201).body(Map.of(
             "access_token", token,
             "token_type", "Bearer"
@@ -56,7 +60,9 @@ public class AuthController {
     public ResponseEntity<?> tokenByApiKey(@RequestBody ApiKeyTokenRequestDto req){
         // Accept plaintext API key in the request body as { "key": "<plaintext>" }
         String key = req.getKey();
+        log.info("API key token exchange attempt");
         String token = authService.tokenForApiKey(key);
+        log.info("API key token exchange success");
         return ResponseEntity.ok(Map.of(
             "access_token", token,
             "token_type", "Bearer",

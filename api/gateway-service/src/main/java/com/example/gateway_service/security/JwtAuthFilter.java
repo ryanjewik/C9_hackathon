@@ -26,11 +26,14 @@ import java.util.Collection;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
 public class JwtAuthFilter implements GlobalFilter {
 
+    private static final Logger log = LoggerFactory.getLogger(JwtAuthFilter.class);
     private final Key key;
     private final String expectedIssuer;
     private final String expectedAudience;
@@ -61,12 +64,14 @@ public class JwtAuthFilter implements GlobalFilter {
         // POST /auth/register and POST /auth/login so clients can register/login
         // without a JWT. Keep other identity endpoints protected.
         if (isIdentity && (path.equals("/auth/register") || path.equals("/auth/login") || path.equals("/auth/token") || path.startsWith("/auth/public/"))) {
+            log.debug("Auth bypass: public endpoint {}", path);
             return chain.filter(exchange);
         }
 
         HttpHeaders headers = exchange.getRequest().getHeaders();
         String auth = headers.getFirst(HttpHeaders.AUTHORIZATION);
         if (auth == null || !auth.startsWith("Bearer ")) {
+            log.warn("Missing or invalid Authorization header: method={} path={}", exchange.getRequest().getMethod(), path);
             ServerHttpResponse resp = exchange.getResponse();
             resp.setStatusCode(HttpStatus.UNAUTHORIZED);
             return resp.setComplete();
@@ -83,6 +88,7 @@ public class JwtAuthFilter implements GlobalFilter {
                 claimsMap = jwt.getClaims();
                 subject = jwt.getSubject();
             } catch (org.springframework.security.oauth2.jwt.JwtException ex) {
+                log.warn("JWT decode failed (JWKS): path={} error={}", path, ex.getMessage());
                 ServerHttpResponse resp = exchange.getResponse();
                 resp.setStatusCode(HttpStatus.UNAUTHORIZED);
                 return resp.setComplete();
@@ -94,6 +100,7 @@ public class JwtAuthFilter implements GlobalFilter {
                 claimsMap = jj;
                 subject = jj.getSubject();
             } catch (io.jsonwebtoken.JwtException ex) {
+                log.warn("JWT decode failed (HMAC): path={} error={}", path, ex.getMessage());
                 ServerHttpResponse resp = exchange.getResponse();
                 resp.setStatusCode(HttpStatus.UNAUTHORIZED);
                 return resp.setComplete();
@@ -105,6 +112,7 @@ public class JwtAuthFilter implements GlobalFilter {
             Object issObj = claimsMap.get("iss");
             String iss = (issObj instanceof String) ? (String) issObj : null;
             if (iss == null || !this.expectedIssuer.equals(iss)) {
+                log.warn("JWT issuer mismatch: path={} expected={} got={}", path, this.expectedIssuer, iss);
                 ServerHttpResponse resp = exchange.getResponse();
                 resp.setStatusCode(HttpStatus.UNAUTHORIZED);
                 return resp.setComplete();
@@ -119,6 +127,7 @@ public class JwtAuthFilter implements GlobalFilter {
                 audOk = ((Collection<?>) audObj).contains(this.expectedAudience);
             }
             if (!audOk) {
+                log.warn("JWT audience mismatch: path={} expected={}", path, this.expectedAudience);
                 ServerHttpResponse resp = exchange.getResponse();
                 resp.setStatusCode(HttpStatus.UNAUTHORIZED);
                 return resp.setComplete();
@@ -133,6 +142,7 @@ public class JwtAuthFilter implements GlobalFilter {
         if (isApi) {
             Object apikey = finalClaims.get("apikey");
             if (apikey == null || !Boolean.TRUE.equals(Boolean.valueOf(apikey.toString()))) {
+                log.warn("API route requires apikey token: path={} subject={}", path, finalSubject);
                 ServerHttpResponse resp = exchange.getResponse();
                 resp.setStatusCode(HttpStatus.FORBIDDEN);
                 return resp.setComplete();
@@ -153,6 +163,7 @@ public class JwtAuthFilter implements GlobalFilter {
                     .build();
 
             ServerWebExchange mutated = exchange.mutate().request(req).build();
+            log.info("API request authorized: path={} teamId={}", path, finalSubject);
             return chain.filter(mutated);
         } else {
             // Identity routes: keep original Authorization header so identity service can introspect/refresh
@@ -167,6 +178,7 @@ public class JwtAuthFilter implements GlobalFilter {
                     .build();
 
             ServerWebExchange mutated = exchange.mutate().request(req).build();
+            log.info("Identity request authorized: path={} userId={}", path, finalSubject);
             return chain.filter(mutated);
         }
     }

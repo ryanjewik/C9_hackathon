@@ -1,0 +1,54 @@
+receivers:
+  otlp:
+    protocols:
+      grpc: {}
+      http: {}
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 400
+    spike_limit_mib: 64
+
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+
+  resource:
+    attributes:
+      - key: service.name
+        action: insert
+        value: unknown-service
+
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [otlp/tempo]
+
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [prometheus]
+
+# Tail-based or probabilistic sampling can be enabled here for production.
+# Example (commented):
+# processors:
+#   tail_sampling:
+#     decision_wait: 30s
+#     num_traces: 200000
+#     policies:
+#       - name: keep_errors
+#         type: status_code
+#         status_code:
+#           code: 2 # keep HTTP 5xx and 4xx

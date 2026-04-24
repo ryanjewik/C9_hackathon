@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'api-services'
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['gateway-service:8080','data-service-1:8080','data-service-2:8080','identity-service:8081']
+
+  # OTEL-forwarded app metrics (prometheus exporter on 8889)
+  - job_name: 'otel-app-metrics'
+    static_configs:
+      - targets: ['otel-collector:8889']
+
+  # OTEL collector internal telemetry (on 8888)
+  - job_name: 'otel-collector-internal'
+    static_configs:
+      - targets: ['otel-collector:8888']
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

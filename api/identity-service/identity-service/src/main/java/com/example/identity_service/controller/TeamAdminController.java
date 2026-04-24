@@ -30,6 +30,7 @@ import com.example.identity_service.entity.TeamMember;
 @RestController
 @RequestMapping("teamadmin")
 public class TeamAdminController {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(TeamAdminController.class);
     private final TeamAdminService teamAdminService;
 
     public TeamAdminController(TeamAdminService teamAdminService){
@@ -58,7 +59,9 @@ public class TeamAdminController {
         }
 
         String name = team.getName();
+        log.info("Create team: ownerId={} name={}", ownerId, name);
         Team t = teamAdminService.createNewTeam(name, ownerId);
+        log.info("Team created: teamId={} name={}", t.getId(), t.getName());
         return ResponseEntity.status(201).body(Map.of(
             "team_id", t.getId(),
             "team_name", t.getName(),
@@ -82,10 +85,13 @@ public class TeamAdminController {
             return ResponseEntity.status(401).body(Map.of("error", "invalid_token_subject"));
         }
 
+        log.info("Delete team: teamId={} requester={}", teamId, requester);
         boolean ok = teamAdminService.deleteTeam(teamId, requester);
         if (!ok) {
+            log.warn("Delete team failed: teamId={} requester={}", teamId, requester);
             return ResponseEntity.status(403).body(Map.of("error", "not_authorized_or_not_found"));
         }
+        log.info("Team deleted: teamId={}", teamId);
         return ResponseEntity.noContent().build();
     }
 
@@ -95,8 +101,10 @@ public class TeamAdminController {
         if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
         UUID userId;
         try { userId = UUID.fromString(jwt.getSubject()); } catch (Exception ex) { return ResponseEntity.status(401).body(Map.of("error","invalid_token_subject")); }
+        log.info("Delete account: userId={}", userId);
         boolean ok = teamAdminService.deleteAccount(userId);
         if (!ok) return ResponseEntity.status(500).body(Map.of("error","failed_to_delete_account"));
+        log.info("Account deleted: userId={}", userId);
         return ResponseEntity.noContent().build();
     }
 
@@ -106,6 +114,7 @@ public class TeamAdminController {
         if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
         UUID userId;
         try { userId = UUID.fromString(jwt.getSubject()); } catch (Exception ex) { return ResponseEntity.status(401).body(Map.of("error","invalid_token_subject")); }
+        log.info("View teams: userId={}", userId);
         return ResponseEntity.ok(teamAdminService.viewTeams(userId));
     }
 
@@ -113,6 +122,7 @@ public class TeamAdminController {
     @org.springframework.web.bind.annotation.GetMapping("/{teamId}/members")
     public ResponseEntity<?> viewTeamMembers(@PathVariable("teamId") UUID teamId, @AuthenticationPrincipal Jwt jwt) {
         if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
+        log.info("View team members: teamId={}", teamId);
         return ResponseEntity.ok(teamAdminService.viewTeamMembers(teamId));
     }
 
@@ -122,8 +132,13 @@ public class TeamAdminController {
         if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
         UUID sender;
         try { sender = UUID.fromString(jwt.getSubject()); } catch (Exception ex) { return ResponseEntity.status(401).body(Map.of("error","invalid_token_subject")); }
+        log.info("Send invite: team={} to={} from={}", dto.getSendingTeam(), dto.getReceivingPlayer(), sender);
         Optional<Invitation> inv = teamAdminService.invite(dto.getSendingTeam(), dto.getReceivingPlayer(), sender);
-        if (inv.isEmpty()) return ResponseEntity.status(400).body(Map.of("error","failed_to_create_invite"));
+        if (inv.isEmpty()) {
+            log.warn("Send invite failed: team={} to={}", dto.getSendingTeam(), dto.getReceivingPlayer());
+            return ResponseEntity.status(400).body(Map.of("error","failed_to_create_invite"));
+        }
+        log.info("Invite created: inviteId={}", inv.get().getId());
         return ResponseEntity.status(201).body(inv.get());
     }
 
@@ -133,8 +148,13 @@ public class TeamAdminController {
         if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
         UUID receiver;
         try { receiver = UUID.fromString(jwt.getSubject()); } catch (Exception ex) { return ResponseEntity.status(401).body(Map.of("error","invalid_token_subject")); }
+        log.info("Accept invite: inviteId={} receiver={}", inviteId, receiver);
         boolean ok = teamAdminService.acceptInvite(inviteId, receiver);
-        if (!ok) return ResponseEntity.status(400).body(Map.of("error","failed_to_accept_invite"));
+        if (!ok) {
+            log.warn("Accept invite failed: inviteId={} receiver={}", inviteId, receiver);
+            return ResponseEntity.status(400).body(Map.of("error","failed_to_accept_invite"));
+        }
+        log.info("Invite accepted: inviteId={}", inviteId);
         return ResponseEntity.noContent().build();
     }
 
@@ -144,6 +164,7 @@ public class TeamAdminController {
         if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
         UUID userId;
         try { userId = UUID.fromString(jwt.getSubject()); } catch (Exception ex) { return ResponseEntity.status(401).body(Map.of("error","invalid_token_subject")); }
+        log.info("View invites: userId={}", userId);
         return ResponseEntity.ok(teamAdminService.viewInvites(userId));
     }
 
@@ -153,8 +174,10 @@ public class TeamAdminController {
         if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
         UUID userId;
         try { userId = UUID.fromString(jwt.getSubject()); } catch (Exception ex) { return ResponseEntity.status(401).body(Map.of("error","invalid_token_subject")); }
+        log.info("Reject invite: inviteId={} userId={}", inviteId, userId);
         boolean ok = teamAdminService.rejectInvite(inviteId, userId);
         if (!ok) return ResponseEntity.status(400).body(Map.of("error","failed_to_reject_invite"));
+        log.info("Invite rejected: inviteId={}", inviteId);
         return ResponseEntity.noContent().build();
     }
 
@@ -166,8 +189,12 @@ public class TeamAdminController {
         if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
         UUID requester;
         try { requester = UUID.fromString(jwt.getSubject()); } catch (Exception ex) { return ResponseEntity.status(401).body(Map.of("error","invalid_token_subject")); }
+        log.info("Remove team member: teamId={} memberId={} requester={}", teamId, memberId, requester);
         boolean ok = teamAdminService.removeTeamMember(teamId, memberId, requester);
-        if (!ok) return ResponseEntity.status(403).body(Map.of("error","failed_to_remove_member"));
+        if (!ok) {
+            log.warn("Remove team member failed: teamId={} memberId={}", teamId, memberId);
+            return ResponseEntity.status(403).body(Map.of("error","failed_to_remove_member"));
+        }
         return ResponseEntity.noContent().build();
     }
 
@@ -178,6 +205,7 @@ public class TeamAdminController {
         if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
         UUID requester;
         try { requester = UUID.fromString(jwt.getSubject()); } catch (Exception ex) { return ResponseEntity.status(401).body(Map.of("error","invalid_token_subject")); }
+        log.info("Leave team: teamId={} requester={}", teamId, requester);
         boolean ok = teamAdminService.leaveTeam(teamId, requester);
         if (!ok) return ResponseEntity.status(400).body(Map.of("error","failed_to_leave_team"));
         return ResponseEntity.noContent().build();
@@ -192,6 +220,7 @@ public class TeamAdminController {
         if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
         UUID requester;
         try { requester = UUID.fromString(jwt.getSubject()); } catch (Exception ex) { return ResponseEntity.status(401).body(Map.of("error","invalid_token_subject")); }
+        log.info("Update member role: teamId={} memberId={} role={} requester={}", teamId, memberId, dto.getRole(), requester);
         boolean ok = teamAdminService.updateMemberRole(teamId, memberId, dto.getRole(), requester);
         if (!ok) return ResponseEntity.status(403).body(Map.of("error","failed_to_update_role"));
         return ResponseEntity.noContent().build();
@@ -201,6 +230,7 @@ public class TeamAdminController {
     @GetMapping("/{teamId}/members/list")
     public ResponseEntity<?> getTeamMembers(@PathVariable("teamId") UUID teamId, @AuthenticationPrincipal Jwt jwt) {
         if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
+        log.info("Get team members list: teamId={}", teamId);
         return ResponseEntity.ok(teamAdminService.viewTeamMembers(teamId));
     }
 
@@ -212,8 +242,12 @@ public class TeamAdminController {
         if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
         UUID requester;
         try { requester = UUID.fromString(jwt.getSubject()); } catch (Exception ex) { return ResponseEntity.status(401).body(Map.of("error","invalid_token_subject")); }
+        log.info("Create API key: teamId={} name={} requester={}", teamId, dto.getName(), requester);
         var resultOpt = teamAdminService.createApiKey(teamId, dto.getName(), requester);
-        if (resultOpt.isEmpty()) return ResponseEntity.status(403).body(Map.of("error","not_authorized_or_failed"));
+        if (resultOpt.isEmpty()) {
+            log.warn("Create API key failed: teamId={} requester={}", teamId, requester);
+            return ResponseEntity.status(403).body(Map.of("error","not_authorized_or_failed"));
+        }
         var result = resultOpt.get();
         com.example.identity_service.entity.ApiKey saved = result.getApiKey();
         String plaintext = result.getPlaintext();
@@ -224,6 +258,7 @@ public class TeamAdminController {
         resp.setCreatedAt(saved.getCreatedAt());
         // return plaintext exactly once in this response; do NOT store or log it
         resp.setKey(plaintext);
+        log.info("API key created: teamId={} keyId={} prefix={}", teamId, saved.getId(), saved.getKeyPrefix());
         return ResponseEntity.status(201).body(resp);
     }
 
@@ -234,6 +269,7 @@ public class TeamAdminController {
         if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
         UUID requester;
         try { requester = UUID.fromString(jwt.getSubject()); } catch (Exception ex) { return ResponseEntity.status(401).body(Map.of("error","invalid_token_subject")); }
+        log.info("List API keys: teamId={} requester={}", teamId, requester);
         java.util.List<com.example.identity_service.entity.ApiKey> keys = teamAdminService.listApiKeys(teamId, requester);
         java.util.List<ApiKeyResponseDto> out = new java.util.ArrayList<>();
         for (com.example.identity_service.entity.ApiKey k : keys) {
@@ -256,8 +292,12 @@ public class TeamAdminController {
         if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
         UUID requester;
         try { requester = UUID.fromString(jwt.getSubject()); } catch (Exception ex) { return ResponseEntity.status(401).body(Map.of("error","invalid_token_subject")); }
+        log.info("Delete API key: teamId={} keyId={} requester={}", teamId, apiKeyId, requester);
         boolean ok = teamAdminService.deleteApiKey(apiKeyId, requester);
-        if (!ok) return ResponseEntity.status(403).body(Map.of("error","not_authorized_or_not_found"));
+        if (!ok) {
+            log.warn("Delete API key failed: teamId={} keyId={} requester={}", teamId, apiKeyId, requester);
+            return ResponseEntity.status(403).body(Map.of("error","not_authorized_or_not_found"));
+        }
         return ResponseEntity.noContent().build();
     }
 

@@ -1,5 +1,7 @@
 package com.example.gateway_service.caching;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
@@ -23,6 +25,7 @@ import java.io.IOException;
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 20)
 public class RateLimiterFilter implements GlobalFilter {
+    private static final Logger log = LoggerFactory.getLogger(RateLimiterFilter.class);
     private final ReactiveStringRedisTemplate redis;
     private long windowMillis;
     private long maxRequests;
@@ -46,12 +49,13 @@ public class RateLimiterFilter implements GlobalFilter {
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
-        String teamId = exchange.getRequest().getHeaders().getFirst("X-Team-Id");
-        if (teamId == null || teamId.isEmpty()) {
+        String _teamId = exchange.getRequest().getHeaders().getFirst("X-Team-Id");
+        if (_teamId == null || _teamId.isEmpty()) {
             if (exchange.getRequest().getRemoteAddress() != null && exchange.getRequest().getRemoteAddress().getAddress() != null) {
-                teamId = exchange.getRequest().getRemoteAddress().getAddress().getHostAddress();
+                _teamId = exchange.getRequest().getRemoteAddress().getAddress().getHostAddress();
             }
         }
+        final String teamId = _teamId;
 
         String key = "ratelimit:team:" + teamId;
         long now = Instant.now().toEpochMilli();
@@ -61,6 +65,7 @@ public class RateLimiterFilter implements GlobalFilter {
             .flatMap(count -> {
                 long current = count != null ? count.longValue() : 0L;
                 if (current > maxRequests) {
+                    log.warn("Rate limit exceeded: id={} count={} limit={}", teamId, current, maxRequests);
                     ServerHttpResponse response = exchange.getResponse();
                     response.setStatusCode(HttpStatus.TOO_MANY_REQUESTS);
                     response.getHeaders().add("Retry-After", String.valueOf(windowMillis / 1000L));
@@ -69,6 +74,7 @@ public class RateLimiterFilter implements GlobalFilter {
                     return response.setComplete();
                 }
 
+                log.debug("Rate limit OK: id={} count={} remaining={}", teamId, current, Math.max(0, maxRequests - current));
                 exchange.getResponse().getHeaders().add("X-RateLimit-Limit", String.valueOf(maxRequests));
                 exchange.getResponse().getHeaders().add("X-RateLimit-Remaining", String.valueOf(Math.max(0, maxRequests - current)));
                 return chain.filter(exchange);
