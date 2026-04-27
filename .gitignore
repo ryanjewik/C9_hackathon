@@ -56,3 +56,4 @@ extract_log*
 crops_vod*
 vod8*
 vod9*
+vod_frontend/node_modules*
