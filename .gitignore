@@ -56,3 +56,7 @@ extract_log*
 crops_vod*
 vod8*
 vod9*
+
+valorant_resources/dataset/val
+valorant_resources/dataset/*
+**.txt
