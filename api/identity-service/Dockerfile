@@ -9,4 +9,7 @@ WORKDIR /app
 COPY --from=build /app/target/*.jar app.jar
 EXPOSE 8080
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
-ENTRYPOINT ["java", "-jar", "app.jar"]
+RUN mkdir -p /otel && \
+		curl -L -o /otel/opentelemetry-javaagent.jar \
+			https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/download/v1.28.0/opentelemetry-javaagent.jar
+ENTRYPOINT ["java", "-javaagent:/otel/opentelemetry-javaagent.jar", "-jar", "app.jar"]

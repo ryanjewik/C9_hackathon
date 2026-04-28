@@ -56,6 +56,7 @@ extract_log*
 crops_vod*
 vod8*
 vod9*
+vod_frontend/node_modules*
 
 valorant_resources/dataset/val
 valorant_resources/dataset/*

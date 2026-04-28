@@ -9,8 +9,98 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background-color: #0f1923;
-  color: white;
+  background-color: transparent;
+  color: #1a2a3a;
+}
+
+/* ===== Background ===== */
+
+.sky-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  background: linear-gradient(
+    160deg,
+    #b8e8f5 0%,
+    #cdf0fa 25%,
+    #ddf6fc 55%,
+    #edfaff 100%
+  );
+}
+
+/* Large soft blobs */
+
+.sky-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  pointer-events: none;
+}
+
+/* Aqua blob — bottom-left */
+.sky-blob-aqua {
+  width: 700px;
+  height: 600px;
+  bottom: -200px;
+  left: -100px;
+  background: radial-gradient(
+    circle,
+    rgba(77, 217, 232, 0.38) 0%,
+    rgba(168, 232, 242, 0.22) 50%,
+    transparent 75%
+  );
+}
+
+/* Rose blob — bottom-right */
+.sky-blob-rose {
+  width: 600px;
+  height: 500px;
+  bottom: -150px;
+  right: -80px;
+  background: radial-gradient(
+    circle,
+    rgba(221, 190, 206, 0.50) 0%,
+    rgba(240, 210, 225, 0.28) 50%,
+    transparent 75%
+  );
+}
+
+/* Small accent — top-left corner */
+.sky-blob-accent {
+  width: 400px;
+  height: 350px;
+  top: -80px;
+  left: -60px;
+  background: radial-gradient(
+    circle,
+    rgba(77, 217, 232, 0.20) 0%,
+    transparent 70%
+  );
+}
+
+/* ===== Drifting SVG Clouds ===== */
+
+@keyframes sky-cloud-drift {
+  from { transform: translateX(-600px); }
+  to   { transform: translateX(calc(100vw + 600px)); }
+}
+
+.sky-cloud-wrapper {
+  position: absolute;
+  left: 0;
+  animation: sky-cloud-drift linear infinite;
+  pointer-events: none;
+}
+
+.sky-cloud-svg svg {
+  filter: drop-shadow(0 6px 16px rgba(77, 217, 232, 0.20));
+}
+
+.sky-cloud-svg svg path,
+.sky-cloud-svg svg ellipse,
+.sky-cloud-svg svg rect {
+  fill: white;
 }
 
 * {
@@ -24,14 +114,15 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  background: #1a242d;
+  background: #e8f5fb;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #3a4a5a;
+  background: #4dd9e8;
   border-radius: 4px;
+  opacity: 0.5;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #4a5a6a;
+  background: #2cc8da;
 }

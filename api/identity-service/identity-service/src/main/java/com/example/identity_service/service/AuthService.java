@@ -1,4 +1,6 @@
 package com.example.identity_service.service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import com.example.identity_service.entity.User;
 
@@ -14,6 +16,7 @@ import java.util.UUID;
 
 @Service
 public class AuthService {
+    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
     private final AuthRepository loginRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
@@ -35,13 +38,16 @@ public class AuthService {
     public String authenticate(String username, String password){
         Optional<User> userOpt = loginRepository.findByUsername(username);
         if (userOpt.isEmpty()){
+            log.warn("Login failed: user not found username={}", username);
             throw new com.example.identity_service.exception.UnauthorizedException("invalid_credentials");
         }
         User user = userOpt.get();
         if (!passwordEncoder.matches(password, user.getPasswordHash())){
+            log.warn("Login failed: invalid password username={}", username);
             throw new com.example.identity_service.exception.UnauthorizedException("invalid_credentials");
         }
 
+        log.info("Login success: userId={} username={}", user.getId(), user.getUsername());
         String token = jwtService.generateToken(user.getId(), user.getUsername());
         return token;
     }
@@ -52,13 +58,16 @@ public class AuthService {
      */
     public String register(String username, String email, String password){
         if (username == null || username.isBlank() || email == null || email.isBlank() || password == null || password.isBlank()){
+            log.warn("Registration failed: missing required fields");
             throw new com.example.identity_service.exception.BadRequestException("username_email_password_required");
         }
 
         if (loginRepository.findByUsername(username).isPresent()){
+            log.warn("Registration failed: username taken username={}", username);
             throw new com.example.identity_service.exception.ConflictException("username_taken");
         }
         if (loginRepository.findByEmail(email).isPresent()){
+            log.warn("Registration failed: email taken email={}", email);
             throw new com.example.identity_service.exception.ConflictException("email_taken");
         }
 
@@ -67,6 +76,7 @@ public class AuthService {
         User user = new User(username, email, hash, now);
         User saved = loginRepository.save(user);
 
+        log.info("Registration success: userId={} username={}", saved.getId(), saved.getUsername());
         String token = jwtService.generateToken(saved.getId(), saved.getUsername());
         return token;
     }
@@ -76,7 +86,10 @@ public class AuthService {
      * Returns a JWT string when successful, or throws Unauthorized/NotFound.
      */
     public String tokenForApiKey(String plaintextKey){
-        if (plaintextKey == null || plaintextKey.isBlank()) throw new com.example.identity_service.exception.BadRequestException("api_key_required");
+        if (plaintextKey == null || plaintextKey.isBlank()) {
+            log.warn("API key token exchange failed: missing key");
+            throw new com.example.identity_service.exception.BadRequestException("api_key_required");
+        }
 
         try {
             java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
@@ -86,9 +99,15 @@ public class AuthService {
             String keyHash = sb.toString();
 
             java.util.Optional<com.example.identity_service.entity.ApiKey> akOpt = apiKeyRepository.findByKeyHash(keyHash);
-            if (akOpt.isEmpty()) throw new com.example.identity_service.exception.UnauthorizedException("invalid_api_key");
+            if (akOpt.isEmpty()) {
+                log.warn("API key token exchange failed: key not found");
+                throw new com.example.identity_service.exception.UnauthorizedException("invalid_api_key");
+            }
             com.example.identity_service.entity.ApiKey ak = akOpt.get();
-            if (!"active".equalsIgnoreCase(ak.getStatus())) throw new com.example.identity_service.exception.ForbiddenException("api_key_inactive");
+            if (!"active".equalsIgnoreCase(ak.getStatus())) {
+                log.warn("API key token exchange failed: key inactive teamId={} prefix={}", ak.getTeamId(), ak.getKeyPrefix());
+                throw new com.example.identity_service.exception.ForbiddenException("api_key_inactive");
+            }
 
             // update last used timestamp
             ak.setLastUsedAt(java.time.OffsetDateTime.now());
@@ -96,6 +115,7 @@ public class AuthService {
 
             // Issue a JWT whose subject is the team id and includes key_prefix
             java.util.UUID teamId = ak.getTeamId();
+            log.info("API key token exchange success: teamId={} prefix={}", teamId, ak.getKeyPrefix());
             String token = jwtService.generateTokenForApiKey(teamId, ak.getKeyPrefix(), apiKeyTokenTtlMs);
             return token;
         } catch (Exception ex) {
