@@ -26,7 +26,8 @@ from app.services.processing.vod_processor import VODProcessor
 
 
 def extract_crops_from_vod(vod_number: int, output_dir: str, crops_dir: str,
-                           left_players: list = None, right_players: list = None):
+                           left_players: list = None, right_players: list = None,
+                           left_team: str = None, right_team: str = None):
     """Run VOD processing on a single file, collecting weapon icon crops."""
     if vod_number == 1:
         video_filename = "match_vod.mp4"
@@ -52,13 +53,13 @@ def extract_crops_from_vod(vod_number: int, output_dir: str, crops_dir: str,
     # Determine if strict roster mode
     strict = bool(left_players and right_players)
 
-    # Run processing with auto-detect (no team/player info passed)
+    # Run processing — pass team codes if provided, otherwise auto-detect
     result = processor.process_vod(
         job_id=job_id,
         video_path=video_path,
         output_dir=output_dir,
-        left_team=None,
-        right_team=None,
+        left_team=left_team,
+        right_team=right_team,
         left_player_pool=left_players,
         right_player_pool=right_players,
         strict_roster=strict,
@@ -107,10 +108,22 @@ def main():
         '--right-players', nargs='+', type=str, default=None,
         help='Exact player names for the right (orange) team (enables strict roster mode)'
     )
+    parser.add_argument(
+        '--left-team', type=str, default=None,
+        help='Team code/tag for the left (teal) team (e.g. TL, SEN). Skips auto-detection.'
+    )
+    parser.add_argument(
+        '--right-team', type=str, default=None,
+        help='Team code/tag for the right (orange) team (e.g. SEN, C9). Skips auto-detection.'
+    )
     args = parser.parse_args()
 
     output_dir = "/app/outputs"
     crops_dir = os.path.join(output_dir, "crops")
+    # Clean output dir to prevent stale files from prior runs
+    if os.path.exists(crops_dir):
+        import shutil
+        shutil.rmtree(crops_dir)
     os.makedirs(crops_dir, exist_ok=True)
 
     total_crops = 0
@@ -119,6 +132,8 @@ def main():
             vod_num, output_dir, crops_dir,
             left_players=args.left_players,
             right_players=args.right_players,
+            left_team=args.left_team,
+            right_team=args.right_team,
         )
         total_crops += count
         print(f"\n  Running total: {total_crops} crops\n")

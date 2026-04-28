@@ -6,6 +6,8 @@ Extracts game events from VALORANT VODs.
 import os
 import json
 import re
+import shutil
+import statistics
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -360,10 +362,23 @@ class VODProcessor:
             # Enable crop saving on killfeed detector so icons are written to disk
             if killfeed_detector:
                 crops_dir = os.path.join(output_dir, "crops")
+                # Clear stale crops from any previous run so orphaned files
+                # don't contaminate export_crops_by_label.py output.
+                shutil.rmtree(crops_dir, ignore_errors=True)
                 os.makedirs(crops_dir, exist_ok=True)
                 killfeed_detector._crop_output_dir = crops_dir
                 self._killfeed_detector = killfeed_detector  # expose for diagnostic access
                 print(f"[{job_id}] Weapon icon crops will be saved to {crops_dir}")
+
+                # Attach CNN classifier for weapon/ability recognition
+                try:
+                    from app.services.processing.icon_classifier import IconCNNClassifier
+                    classifier = IconCNNClassifier()
+                    killfeed_detector.set_weapon_classifier(classifier)
+                    print(f"[{job_id}] Icon CNN classifier attached to KillfeedDetector")
+                except Exception as _clf_err:
+                    print(f"[{job_id}] WARNING: Could not load IconCNNClassifier: {_clf_err} "
+                          f"— weapon fields will remain 'unknown'")
             
             # Connect TopHUD halftime detection to KillfeedDetector
             if top_hud_detector and killfeed_detector:
@@ -619,6 +634,30 @@ class VODProcessor:
                     removed = before - len(all_events)
                     if removed:
                         print(f"[{job_id}] Position-rejection filter removed {removed} events")
+
+            # Patch weapon fields in KILL_EVENTs using CNN classifications.
+            # Events flushed before their crop was finalized won't have been updated
+            # in _pending_kills, so we patch them retroactively here.
+            weapon_patched = 0
+            for d in detectors:
+                wc = getattr(d, '_weapon_classifications', {})
+                if not wc:
+                    continue
+                for ev in all_events:
+                    if ev.type != "KILL_EVENT":
+                        continue
+                    if ev.payload.get("weapon", "unknown") != "unknown":
+                        continue  # already set (was still in _pending_kills at classify time)
+                    ek = (
+                        ev.payload.get("killer_name", "").lower(),
+                        ev.payload.get("victim_name", "").lower(),
+                        int(ev.t_ms),
+                    )
+                    if ek in wc:
+                        ev.payload["weapon"] = wc[ek]
+                        weapon_patched += 1
+            if weapon_patched:
+                print(f"[{job_id}] Patched weapon labels on {weapon_patched} kill events")
             
             # Post-process events
             self._job_manager.update_job_status(
@@ -640,6 +679,8 @@ class VODProcessor:
                         int(ev.t_ms),
                     )
                     for d in detectors:
+                        if not hasattr(d, '_crop_file_paths'):
+                            continue
                         for fpath in d._crop_file_paths.pop(_key, []):
                             try:
                                 os.remove(fpath)
@@ -1204,12 +1245,21 @@ class VODProcessor:
         
         original_pos = cap.get(cv2.CAP_PROP_POS_FRAMES)
         
-        # STEP 1: Find frames with valid game score (indicates match has started)
-        # Scan from 1 minute to 15 minutes to find gameplay
-        print(f"[TeamTagDetector] Scanning for gameplay frames with valid score...")
+        # STEP 1: Find the real match start, then sample frames for team tag OCR.
+        # VODs may begin with highlight reels from previous matches that show
+        # non-zero scores with SWAPPED team sides.  We must detect where the
+        # real match begins and only read team tags from those frames.
+        #
+        # Strategy:
+        #   1. Scan every 15s and collect ALL frames with readable scores.
+        #   2. Detect a "score reset" — where total score drops significantly
+        #      from the max seen (e.g. highlights show 3-2, then real match
+        #      starts at 1-0).  This marks the match boundary.
+        #   3. Use only post-reset frames for team tag OCR.
+        print(f"[TeamTagDetector] Scanning for gameplay frames...")
         
-        valid_gameplay_frames = []
-        scan_times_sec = list(range(60, 900, 15))  # Every 15 seconds from 1-15 min
+        all_scored_frames = []
+        scan_times_sec = list(range(60, 1800, 15))  # Every 15s from 1-30 min
         
         for t_sec in scan_times_sec:
             frame_num = int(t_sec * fps)
@@ -1221,27 +1271,54 @@ class VODProcessor:
             if not ret:
                 continue
             
-            # Check if this frame has a valid score visible
             if left_score_px and right_score_px:
                 left_score_img = crop(frame, left_score_px)
                 right_score_img = crop(frame, right_score_px)
                 
-                # OCR the scores
                 left_score = self._ocr_single_digit(left_score_img, ocr_reader)
                 right_score = self._ocr_single_digit(right_score_img, ocr_reader)
                 
-                # Valid if both scores are readable numbers 0-20
                 if left_score is not None and right_score is not None:
-                    valid_gameplay_frames.append((t_sec, frame_num, left_score, right_score))
-                    if len(valid_gameplay_frames) >= 10:  # Found enough valid frames
-                        break
+                    all_scored_frames.append((t_sec, frame_num, left_score, right_score))
+            
+            # Stop once we have enough post-reset frames (see below)
+            if len(all_scored_frames) >= 30:
+                break
+        
+        # Detect score reset — highlight totals climb, then real match starts
+        # at 0-0 or 1-0.  A drop of ≥2 from max total (when max ≥ 3) signals
+        # the boundary.
+        valid_gameplay_frames = all_scored_frames  # default: use all
+        max_total = 0
+        reset_idx = None
+        for i, (t_sec, fn, ls, rs) in enumerate(all_scored_frames):
+            total = ls + rs
+            if max_total >= 3 and total <= max_total - 2:
+                reset_idx = i
+                print(f"[TeamTagDetector] Score reset detected at t={t_sec}s "
+                      f"(score {ls}-{rs}, prev max total={max_total}) "
+                      f"— real match boundary")
+                break
+            max_total = max(max_total, total)
+        
+        if reset_idx is not None:
+            valid_gameplay_frames = all_scored_frames[reset_idx:]
+            # Also check for 0-0 among post-reset frames
+            for t_sec, fn, ls, rs in valid_gameplay_frames:
+                if ls == 0 and rs == 0:
+                    print(f"[TeamTagDetector] Confirmed 0-0 at t={t_sec}s")
+                    break
+        
+        # Cap to 10 frames for OCR
+        if len(valid_gameplay_frames) > 10:
+            valid_gameplay_frames = valid_gameplay_frames[:10]
         
         if not valid_gameplay_frames:
-            print(f"[TeamTagDetector] No valid gameplay frames found, falling back to fixed times")
-            # Fallback to fixed sample times
+            print(f"[TeamTagDetector] No scored frames found, falling back to fixed times")
             valid_gameplay_frames = [(t, int(t * fps), -1, -1) for t in [180, 240, 300, 360, 420]]
         else:
-            print(f"[TeamTagDetector] Found {len(valid_gameplay_frames)} valid gameplay frames")
+            print(f"[TeamTagDetector] Using {len(valid_gameplay_frames)} frames for team tag OCR"
+                  f"{' (post-reset)' if reset_idx is not None else ''}")
             for t_sec, frame_num, ls, rs in valid_gameplay_frames[:3]:
                 print(f"  t={t_sec}s: score {ls}-{rs}")
         
@@ -2547,11 +2624,14 @@ class KillfeedDetector(BaseDetector):
         self._crop_output_dir: Optional[str] = None
         self._crop_counter: int = 0
         self._crop_file_paths: dict = {}  # (killer_lower, victim_lower, int_t_ms) -> [path, ...]
+        # CNN weapon classifications: (killer_lower, victim_lower, int_t_ms) -> label str
+        self._weapon_classifications: dict = {}
         self._ult_diagnostics: list = []  # collected per-crop ult badge metrics
-        # Deferred crop: wait 2 frames for the row to stabilize before cropping.
+        # Deferred crop: wait N frames for the row to stabilize before cropping.
         # Key: (killer_norm, victim_norm, round) -> dict with row_img, ktr, vtl, etc.
         self._pending_crops: dict = {}
-        self._CROP_DEFER_FRAMES: int = 2  # number of frames to wait before cropping
+        self._CROP_DEFER_FRAMES: int = 40  # number of frames for best-of-N selection
+        self._CROP_DEFER_MS: int = 4000  # max ms to keep scoring before finalizing
         
         # Scheduled halftime start (delayed from transition to capture final kills)
         self._halftime_scheduled_ms: float = 0.0
@@ -2938,7 +3018,15 @@ class KillfeedDetector(BaseDetector):
         for actual_row_idx, y_start, y_end, row_img in rows:
             # Per-row change detection - skip OCR if this row hasn't changed
             row_hash = self._compute_row_hash(row_img)
-            if actual_row_idx in self._row_hashes and self._row_hashes[actual_row_idx] == row_hash:
+            # Bypass hash skip for rows with pending crops — let the dup
+            # path re-run OCR so it can update ktr/vtl boundaries.
+            _has_pending_crop = any(
+                pc.get("actual_row_idx") == actual_row_idx
+                for pc in self._pending_crops.values()
+            )
+            if (actual_row_idx in self._row_hashes
+                    and self._row_hashes[actual_row_idx] == row_hash
+                    and not _has_pending_crop):
                 if _DBG_SELF:
                     print(f"[DBG-SELF] t={t_ms/1000:.1f}s ROW {actual_row_idx} skipped (row hash unchanged)")
                 if _DBG_DEAD:
@@ -3051,13 +3139,64 @@ class KillfeedDetector(BaseDetector):
                 if _DBG_DEAD:
                     self._dbg_dead_counts["dup"] += 1
                 # Check if there's a pending (deferred) crop for this kill.
-                # If so, update it with this frame's data (row is more stable now).
+                # If so, score this frame's icon region and keep the sharpest.
                 pending_key = (killer_name_normalized.lower(), victim_name_normalized.lower())
                 if pending_key in self._pending_crops:
                     pc = self._pending_crops[pending_key]
-                    pc["row_img"] = row_img.copy()
                     pc["frames_seen"] += 1
-                    if pc["frames_seen"] >= self._CROP_DEFER_FRAMES:
+                    # Update row position in case kill scrolled to a new row
+                    pc["actual_row_idx"] = actual_row_idx
+                    pc["_dup_sampled_t"] = t_ms  # mark so resample skips this frame
+                    # Best-of-N boundaries: OCR varies across frames —
+                    # sometimes it merges weapon pixels into the killer
+                    # name bbox, sometimes it gets it right.  Use the
+                    # median of all readings to resist outliers (a single
+                    # falsely-low ktr or falsely-high vtl no longer
+                    # permanently poisons the boundary).
+                    new_ktr = entry.get("killer_text_right")
+                    new_vtl = entry.get("victim_text_left")
+                    if new_ktr is not None:
+                        pc["ktr_samples"].append(new_ktr)
+                        pc["ktr"] = statistics.median(pc["ktr_samples"])
+                    if new_vtl is not None:
+                        pc["vtl_samples"].append(new_vtl)
+                        pc["vtl"] = statistics.median(pc["vtl_samples"])
+                    # Best-of-N image: score by Laplacian variance (sharpness)
+                    # with a ktr bonus — prefer frames where OCR didn't merge
+                    # weapon pixels into the killer name bbox (smaller ktr = better).
+                    try:
+                        _ktr = pc["ktr"] or 0
+                        _vtl = pc["vtl"] or row_img.shape[1]
+                        _ix0 = max(int(_ktr), 0)
+                        _ix1 = min(int(_vtl), row_img.shape[1])
+                        if _ix1 - _ix0 > 10:
+                            _icon_region = row_img[:, _ix0:_ix1]
+                            _gray_icon = cv2.cvtColor(_icon_region, cv2.COLOR_BGR2GRAY)
+                            _sharp = cv2.Laplacian(_gray_icon, cv2.CV_64F).var()
+                        else:
+                            _sharp = 0.0
+                    except Exception:
+                        _sharp = 0.0
+                    # ktr bonus: award up to 500 bonus points for tight boundaries.
+                    # A ktr of ~215 (ideal) scores full bonus; ktr ~330+ scores 0.
+                    _cur_ktr = entry.get("killer_text_right") or _ktr
+                    _ktr_bonus = max(0.0, 500.0 * (1.0 - max(0.0, _cur_ktr - 200.0) / 150.0))
+                    _score = _sharp + _ktr_bonus
+                    _is_new_best = _score > pc.get("best_score", -1)
+                    if _is_new_best:
+                        pc["row_img"] = row_img.copy()
+                        pc["best_score"] = _score
+                        pc["best_ktr"] = _cur_ktr  # track which ktr the best image had
+                    # Per-frame scoring diagnostic
+                    _elapsed_diag = t_ms - pc["t_ms"]
+                    print(f"[CROP-FRAME] crop#{self._crop_counter} {pc['killer_name']}->{pc['victim_name']} "
+                          f"f={pc['frames_seen']} dt={_elapsed_diag:.0f}ms src=dup "
+                          f"sharp={_sharp:.1f} ktr_bonus={_ktr_bonus:.1f} score={_score:.1f} "
+                          f"frame_ktr={_cur_ktr} med_ktr={pc['ktr']} "
+                          f"{'NEW_BEST' if _is_new_best else ''}")
+                    _elapsed = t_ms - pc["t_ms"]
+                    if (pc["frames_seen"] >= self._CROP_DEFER_FRAMES
+                            or _elapsed >= self._CROP_DEFER_MS):
                         self._finalize_deferred_crop(pending_key)
                 # Seal hash for confirmed duplicates
                 self._row_hashes[actual_row_idx] = row_hash
@@ -3089,24 +3228,47 @@ class KillfeedDetector(BaseDetector):
             else:
                 print(f"[KILL] t={t_ms/1000:.1f}s R{display_round} ROW {actual_row_idx+1}: {killer_name_normalized} killed {victim_name_normalized}")
 
-            # Defer weapon/ability icon crop  — store for 2 frames to let the
-            # row stabilize (animation flash fades, text fully loads).
+            # Defer weapon/ability icon crop — store for N frames, keeping the
+            # sharpest frame (best-of-N selection via Laplacian variance).
             ktr = entry.get("killer_text_right")
             vtl = entry.get("victim_text_left")
+            # Score the initial frame immediately
+            _init_score = -1.0
+            try:
+                _iktr = ktr or 0
+                _ivtl = vtl or row_img.shape[1]
+                _iix0 = max(int(_iktr), 0)
+                _iix1 = min(int(_ivtl), row_img.shape[1])
+                if _iix1 - _iix0 > 10:
+                    _iicon = row_img[:, _iix0:_iix1]
+                    _igray = cv2.cvtColor(_iicon, cv2.COLOR_BGR2GRAY)
+                    _isharp = cv2.Laplacian(_igray, cv2.CV_64F).var()
+                else:
+                    _isharp = 0.0
+                _iktr_bonus = max(0.0, 500.0 * (1.0 - max(0.0, (_iktr) - 200.0) / 150.0))
+                _init_score = _isharp + _iktr_bonus
+            except Exception:
+                pass
             pending_key = (killer_name_normalized.lower(), victim_name_normalized.lower())
             self._pending_crops[pending_key] = {
                 "row_img": row_img.copy(),
                 "ktr": ktr,
                 "vtl": vtl,
+                "init_ktr": ktr,  # frozen initial boundary for cropping
+                "init_vtl": vtl,  # frozen initial boundary for cropping
+                "ktr_samples": [ktr] if ktr is not None else [],
+                "vtl_samples": [vtl] if vtl is not None else [],
                 "t_ms": t_ms,
                 "display_round": display_round,
                 "killer_name": killer_name_normalized,
                 "victim_name": victim_name_normalized,
                 "is_self_kill": is_self_kill,
                 "actual_row_idx": actual_row_idx,
-                "frames_seen": 0,  # will increment on dup frames
+                "frames_seen": 0,  # will increment on resample / dup frames
+                "best_score": _init_score,
+                "best_ktr": ktr,  # ktr of best-scoring frame
             }
-            print(f"[CROP-DEFER] crop pending for {killer_name_normalized} -> {victim_name_normalized} ktr={ktr} vtl={vtl} (waiting {self._CROP_DEFER_FRAMES} frames)")
+            print(f"[CROP-DEFER] crop pending for {killer_name_normalized} -> {victim_name_normalized} ktr={ktr} vtl={vtl} init_score={_init_score:.1f} (waiting {self._CROP_DEFER_FRAMES} frames)")
 
             entry["weapon_icon"] = None
 
@@ -3151,11 +3313,61 @@ class KillfeedDetector(BaseDetector):
         self._pending_kills = [k for k in self._pending_kills if k.t_ms >= flush_cutoff_ms]
         events.extend(confirmed_events)
         
+        # ---- Active re-sampling for pending crops ----
+        # The dup path only fires when OCR detects the same kill again,
+        # but hash-sealing prevents re-processing of unchanged rows.
+        # So we actively sample current row images for any pending crops
+        # whose row is still visible, even when hash says "unchanged".
+        # Skip the creation frame (already scored at acceptance time).
+        if self._pending_crops:
+            # Build a lookup from actual_row_idx -> row_img for current frame
+            _current_rows = {r[0]: r[3] for r in rows}  # actual_row_idx -> row_img
+            for pk, pc in list(self._pending_crops.items()):
+                if pc["t_ms"] == t_ms:
+                    continue  # skip creation frame
+                if pc.get("_dup_sampled_t") == t_ms:
+                    continue  # already scored via the dup path this frame
+                _row_idx = pc.get("actual_row_idx")
+                if _row_idx is None or _row_idx not in _current_rows:
+                    continue
+                _row_img = _current_rows[_row_idx]
+                pc["frames_seen"] += 1
+                # Score this frame using same logic as dup path
+                try:
+                    _ktr_val = pc["ktr"] or 0
+                    _vtl_val = pc["vtl"] or _row_img.shape[1]
+                    _ix0 = max(int(_ktr_val), 0)
+                    _ix1 = min(int(_vtl_val), _row_img.shape[1])
+                    if _ix1 - _ix0 > 10:
+                        _icon_r = _row_img[:, _ix0:_ix1]
+                        _gray_r = cv2.cvtColor(_icon_r, cv2.COLOR_BGR2GRAY)
+                        _sharp = cv2.Laplacian(_gray_r, cv2.CV_64F).var()
+                    else:
+                        _sharp = 0.0
+                except Exception:
+                    _sharp = 0.0
+                _score = _sharp  # base sharpness score (no ktr bonus without OCR)
+                _is_new_best = _score > pc.get("best_score", -1)
+                if _is_new_best:
+                    pc["row_img"] = _row_img.copy()
+                    pc["best_score"] = _score
+                # Per-frame scoring diagnostic
+                _elapsed_diag = t_ms - pc["t_ms"]
+                print(f"[CROP-FRAME] crop#{self._crop_counter} {pc['killer_name']}->{pc['victim_name']} "
+                      f"f={pc['frames_seen']} dt={_elapsed_diag:.0f}ms src=resample "
+                      f"sharp={_sharp:.1f} score={_score:.1f} "
+                      f"ktr={pc['ktr']} "
+                      f"{'NEW_BEST' if _is_new_best else ''}")
+                _elapsed = t_ms - pc["t_ms"]
+                if (pc["frames_seen"] >= self._CROP_DEFER_FRAMES
+                        or _elapsed >= self._CROP_DEFER_MS):
+                    self._finalize_deferred_crop(pk)
+
         # Finalize any deferred crops that have been pending long enough
         # (safety net in case dup path was never hit, e.g. row disappeared)
         stale_keys = [k for k, v in self._pending_crops.items()
                       if v["frames_seen"] >= self._CROP_DEFER_FRAMES
-                      or (t_ms - v["t_ms"]) > 500]  # 500ms max wait
+                      or (t_ms - v["t_ms"]) > self._CROP_DEFER_MS]
         for pk in stale_keys:
             self._finalize_deferred_crop(pk)
         
@@ -3175,11 +3387,17 @@ class KillfeedDetector(BaseDetector):
             return
         
         row_img = pc["row_img"]
-        ktr = pc["ktr"]
-        vtl = pc["vtl"]
+        # Use the median boundaries for cropping — with 40 frames the
+        # median is stable enough.  init_ktr kept only for logging.
+        ktr = pc["ktr"]   # median
+        vtl = pc["vtl"]   # median
+        init_ktr = pc["init_ktr"]
+        init_vtl = pc["init_vtl"]
         t_ms = pc["t_ms"]
         
-        print(f"[CROP-DEFER] finalizing crop for {pc['killer_name']} -> {pc['victim_name']} (frames_seen={pc['frames_seen']})")
+        print(f"[CROP-DEFER] finalizing crop for {pc['killer_name']} -> {pc['victim_name']} "
+              f"(frames_seen={pc['frames_seen']}, best_score={pc.get('best_score', -1):.1f}, "
+              f"med_ktr={ktr}, init_ktr={init_ktr}, vtl={vtl}, best_ktr={pc.get('best_ktr', 'n/a')})")
         
         # Seal the row hash now that we're done with this row
         actual_row_idx = pc.get("actual_row_idx")
@@ -3242,6 +3460,22 @@ class KillfeedDetector(BaseDetector):
 
         crop_method = getattr(self, '_last_crop_method', None) or "unknown"
 
+        # Classify the weapon/ability icon via the CNN before saving
+        weapon_label = self._classify_weapon(icon_img)
+        _crop_key = (pc["killer_name"].lower(), pc["victim_name"].lower(), int(t_ms))
+
+        if weapon_label != "unknown":
+            # Store for post-hoc patching of events already flushed to all_events
+            self._weapon_classifications[_crop_key] = weapon_label
+            # Also update any still-pending kill events with the label
+            for ev in self._pending_kills:
+                if ev.type == "KILL_EVENT":
+                    ek = (ev.payload.get("killer_name","").lower(),
+                          ev.payload.get("victim_name","").lower(), int(ev.t_ms))
+                    if ek == _crop_key:
+                        ev.payload["weapon"] = weapon_label
+            print(f"[WEAPON-CNN] {pc['killer_name']} -> {pc['victim_name']}: {weapon_label}")
+
         if icon_img is not None and self._crop_output_dir:
             self._crop_counter += 1
             method_dir = os.path.join(self._crop_output_dir, crop_method)
@@ -3263,7 +3497,6 @@ class KillfeedDetector(BaseDetector):
                 cv2.imwrite(ult_path, ult_badge_img)
 
             # Track crop paths for ghost orphan cleanup
-            _crop_key = (pc["killer_name"].lower(), pc["victim_name"].lower(), int(t_ms))
             self._crop_file_paths.setdefault(_crop_key, []).append(crop_path)
 
             # Diagnostic: save annotated full row alongside crop
@@ -3859,6 +4092,16 @@ class KillfeedDetector(BaseDetector):
         # Find colored regions
         teal_regions = self._find_color_regions(teal_mask)
         orange_regions = self._find_color_regions(orange_mask)
+
+        # Validate killfeed geometry: real killfeed backgrounds span the full row height
+        # and have meaningful width. Camera pan artifacts (jerseys, logos, arena screens)
+        # produce small, irregular color patches that fail this check.
+        _min_rh = h * 0.55   # region must cover ≥55% of row height
+        _min_rw = max(12, int(w * 0.04))  # region must be ≥4% of row width
+        _teal_valid_geom = any(rh >= _min_rh and rw >= _min_rw for _, _, rw, rh in teal_regions)
+        _orange_valid_geom = any(rh >= _min_rh and rw >= _min_rw for _, _, rw, rh in orange_regions)
+        if not (_teal_valid_geom or _orange_valid_geom):
+            return None
         
         all_regions = []
         for x, _, rw, _ in teal_regions:
@@ -3966,7 +4209,105 @@ class KillfeedDetector(BaseDetector):
                 ktr_w = killer_text_right - ktr_xl
                 MAX_NAME_W = 100
                 if ktr_w > MAX_NAME_W:
-                    killer_text_right = ktr_xl + MAX_NAME_W
+                    capped_ktr = ktr_xl + MAX_NAME_W
+                    # Fix 20: when the cap fires, the OCR bbox included
+                    # weapon pixels.  Refine kR by scanning leftward
+                    # from the capped position to find where white text
+                    # pixels actually end.  Text characters are bright
+                    # (gray>180) low-saturation pixels on team-color bg.
+                    # Once the column density of such pixels drops below
+                    # a threshold we've passed the last text character.
+                    try:
+                        _cn = getattr(self, '_crop_counter', 0)
+                        _gray = cv2.cvtColor(row_img, cv2.COLOR_BGR2GRAY)
+                        _hsv = cv2.cvtColor(row_img, cv2.COLOR_BGR2HSV)
+                        _bright = (_gray > 180).astype(np.uint8)
+                        _low_sat = (_hsv[:, :, 1] < 80).astype(np.uint8)
+                        _text_px = _bright & _low_sat  # white text pixels
+                        _h = row_img.shape[0]
+                        # Scan RIGHTWARD from a conservative text position
+                        # looking for the gap between text and weapon icon.
+                        # Both text and weapon are bright/white on team-color
+                        # bg, but there is a short stretch of pure bg (no
+                        # white pixels) between the last text char and the
+                        # weapon.  A run of >=3 empty columns = gap found.
+                        MIN_TEXT_W = 45  # shortest killer names are ~46px
+                        GAP_RUN = 6      # columns of no text = gap (>3 avoids inter-letter gaps)
+                        scan_start = int(ktr_xl) + MIN_TEXT_W
+                        scan_limit = min(int(capped_ktr), row_img.shape[1] - 1)
+                        empty_run = 0
+                        gap_start = -1
+                        _densities = []
+                        for sx in range(scan_start, scan_limit + 1):
+                            col_density = float(np.sum(_text_px[:, sx])) / _h
+                            _densities.append((sx, round(col_density, 3)))
+                            if col_density < 0.15:
+                                if empty_run == 0:
+                                    gap_start = sx
+                                empty_run += 1
+                                if empty_run >= GAP_RUN:
+                                    break
+                            else:
+                                empty_run = 0
+                                gap_start = -1
+                        # Count text-like columns (density >= 0.15) before
+                        # the gap.  On coloured team backgrounds the
+                        # gray>180+sat<80 detector is very sparse,
+                        # producing false gaps within actual text.
+                        # Require at least MIN_TEXT_BEFORE detected text
+                        # columns before the gap to confirm the detector
+                        # is working on this background.
+                        MIN_TEXT_BEFORE = 10
+                        text_cols_before = sum(
+                            1 for x, d in _densities
+                            if x < gap_start and d >= 0.15
+                        ) if gap_start > 0 else 0
+                        print(f"[CROP-DBG] crop#{_cn} text-edge scan: start={scan_start} limit={scan_limit} gap@{gap_start} run={empty_run} textBefore={text_cols_before} densities={_densities}")
+                        if (empty_run >= GAP_RUN and gap_start > 0
+                                and text_cols_before >= MIN_TEXT_BEFORE):
+                            refined_ktr = gap_start
+                            if refined_ktr < int(capped_ktr) - 3:
+                                print(f"[CROP-DBG] crop#{_cn} kR text-edge refinement: capped={int(capped_ktr)} -> {refined_ktr} (gap@{gap_start}, {empty_run} empty cols, {text_cols_before} text cols)")
+                                killer_text_right = float(refined_ktr)
+                            else:
+                                killer_text_right = capped_ktr
+                        elif (empty_run >= GAP_RUN and gap_start > 0):
+                            # Fallback: brightness+sat detector failed on
+                            # this bg (textBefore too low).  Verify the gap
+                            # with Canny edge detection — text chars produce
+                            # strong vertical edges, the bg gap has few.
+                            _edges = cv2.Canny(_gray, 80, 200)
+                            _e_scan_start = int(ktr_xl) + 10
+                            _e_gap_run = 0
+                            _e_gap_start = -1
+                            _e_text_cols = 0
+                            for sx in range(_e_scan_start, int(capped_ktr)):
+                                col_edge = float(np.sum(_edges[:, sx] > 0)) / _h
+                                if col_edge >= 0.10:
+                                    _e_text_cols += 1
+                                    _e_gap_run = 0
+                                    _e_gap_start = -1
+                                else:
+                                    if _e_gap_run == 0:
+                                        _e_gap_start = sx
+                                    _e_gap_run += 1
+                                    if _e_gap_run >= GAP_RUN:
+                                        break
+                            if (_e_gap_run >= GAP_RUN and _e_gap_start > 0
+                                    and _e_text_cols >= 5):
+                                refined_ktr = _e_gap_start
+                                if refined_ktr < int(capped_ktr) - 3:
+                                    print(f"[CROP-DBG] crop#{_cn} kR edge-fallback: capped={int(capped_ktr)} -> {refined_ktr} (edge gap@{_e_gap_start}, {_e_text_cols} edge cols)")
+                                    killer_text_right = float(refined_ktr)
+                                else:
+                                    killer_text_right = capped_ktr
+                            else:
+                                print(f"[CROP-DBG] crop#{_cn} edge-fallback: no valid gap (_e_text_cols={_e_text_cols} _e_gap_run={_e_gap_run})")
+                                killer_text_right = capped_ktr
+                        else:
+                            killer_text_right = capped_ktr
+                    except Exception:
+                        killer_text_right = capped_ktr
             else:
                 # Fall back to unfiltered if filtering removed too many
                 killer_text_right = names[0].get("x_right")
@@ -4161,8 +4502,8 @@ class KillfeedDetector(BaseDetector):
                             # Guard: if correction made gap too large, the
                             # scan hit team color from a different element
                             # (e.g. agent icon, different row). Revert.
-                            if gap > w * 0.38:
-                                print(f"[CROP-DBG] crop#{crop_num} ktr correction {original_left_bound} -> {new_ktr} REVERTED (gap={gap} > {w*0.38:.0f})")
+                            if gap > w * 0.40:
+                                print(f"[CROP-DBG] crop#{crop_num} ktr correction {original_left_bound} -> {new_ktr} REVERTED (gap={gap} > {w*0.40:.0f})")
                                 left_bound = original_left_bound
                                 gap = right_bound - left_bound
                             else:
@@ -4182,16 +4523,16 @@ class KillfeedDetector(BaseDetector):
 
                 print(f"[CROP-DBG] crop#{crop_num} OCR: kR={killer_text_right:.1f} vL={victim_text_left:.1f} gap={gap} w={w}")
 
-                if gap >= 30 and gap <= w * 0.38:
+                if gap >= 30 and gap <= w * 0.40:
                     # Expand search zone generously left to catch icons
                     # absorbed into the killer name bbox
                     pass  # gap in range — proceed with Strategy 1
                 elif gap < 30:
                     print(f"[CROP-DBG] crop#{crop_num} SKIP Strategy1: gap={gap} < 30")
                 else:
-                    print(f"[CROP-DBG] crop#{crop_num} SKIP Strategy1: gap={gap} > {w*0.38:.0f} (w*0.38)")
+                    print(f"[CROP-DBG] crop#{crop_num} SKIP Strategy1: gap={gap} > {w*0.40:.0f} (w*0.40)")
 
-                if gap >= 30 and gap <= w * 0.38:
+                if gap >= 30 and gap <= w * 0.40:
                     expand_right = max(10, int(gap * 0.10))
                     # For very large gaps the gun sits fully inside
                     # kR..vL — don't search left of kR to avoid
@@ -4376,7 +4717,7 @@ class KillfeedDetector(BaseDetector):
                             icon_x0 = kR_int
 
                         cluster_gap = max(12, int(h * 0.40))
-                        MAX_ICON_W = min(140, max(int(gap * 0.75), 80))
+                        MAX_ICON_W = min(140, max(int(gap * 0.85), 80))
                         for c in bp_valid[1:]:
                             c_x0, c_x1 = c[0], c[0] + c[2]
                             if (c_x0 <= icon_x1 + cluster_gap and
@@ -4418,6 +4759,31 @@ class KillfeedDetector(BaseDetector):
                                               f"{icon_x0} -> {new_x0}")
                                         icon_x0 = new_x0
 
+                        # Fix 22k: right-edge saturation trim.
+                        # Headshot-icon pixels are coloured (high sat)
+                        # while weapon pixels are gray (low sat).  When
+                        # a contour merges weapon + headshot, the right
+                        # edge columns will be mostly high-saturation.
+                        # Scan leftward from icon_x1; if a column has
+                        # fewer than 3 low-sat pixels (sat<90 in the
+                        # raw HSV), trim icon_x1 back.
+                        sat_raw = hsv_row[0:h, :, 1]
+                        trim_x1 = icon_x1
+                        for col in range(icon_x1 - 1,
+                                         max(icon_x0 + 20, icon_x1 - 15) - 1,
+                                         -1):
+                            n_lowsat = int(np.sum(sat_raw[0:h, col] < 90))
+                            if n_lowsat >= 5:
+                                break
+                            trim_x1 = col
+                        sat_trim_amount = 0
+                        if trim_x1 < icon_x1:
+                            sat_trim_amount = icon_x1 - trim_x1
+                            print(f"[CROP-DBG] crop#{crop_num} sat-trim: "
+                                  f"icon_x1 {icon_x1} -> {trim_x1} "
+                                  f"(-{sat_trim_amount}px)")
+                            icon_x1 = trim_x1
+
                         # Clamp to OCR boundaries — slightly generous
                         # on the left (weapons extend left of ktr) and
                         # allow a small right overshoot (gun barrels can
@@ -4445,7 +4811,10 @@ class KillfeedDetector(BaseDetector):
                             icon_x1 = hs_right_limit
 
                         if (icon_x1 - icon_x0) > MAX_ICON_W:
+                            icon_x1_pre_maxw = icon_x1
                             icon_x1 = icon_x0 + MAX_ICON_W
+                        else:
+                            icon_x1_pre_maxw = icon_x1
 
                         pad = max(4, int(h * 0.15))
                         x0 = max(0, icon_x0 - pad)
@@ -4472,15 +4841,74 @@ class KillfeedDetector(BaseDetector):
                         elif icon_extends_left and ktr_skip_bright:
                             guard_margin = 5
                         elif icon_extends_left:
-                            # Fix 16b: for non-ktr, bright blobs left of
-                            # kR are likely killer-text, not weapon. Use
-                            # tight constant guard to prevent text bleed.
-                            guard_margin = 4
+                            # Fix 22i: icon_x0 extends left of kR.
+                            # White killer-text chars pass the same
+                            # gray>180+sat<90 filter as weapon pixels,
+                            # so contours may merge text + weapon.
+                            # Scan column-wise through thresh between
+                            # icon_x0 and kR looking for a dark valley
+                            # (>=2 consecutive cols with 0 white px)
+                            # that separates text from weapon.  Clip
+                            # icon_x0 to the right side of the valley.
+                            overshoot = original_kR - icon_x0
+                            if overshoot > 4:
+                                check_x0 = max(0, icon_x0)
+                                check_x1 = min(w, original_kR)
+                                col_hits = np.sum(
+                                    thresh[0:h, check_x0:check_x1] > 0,
+                                    axis=0)
+                                # Find rightmost dark valley (>=2 cols
+                                # with <=1 white pixel each) — that's
+                                # the gap between text and weapon.
+                                valley_end = -1
+                                i = len(col_hits) - 1
+                                while i >= 1:
+                                    if col_hits[i] <= 1 and col_hits[i - 1] <= 1:
+                                        valley_end = i + 1  # right edge of valley
+                                        break
+                                    i -= 1
+                                if valley_end >= 0:
+                                    clip_x = check_x0 + valley_end
+                                    new_overshoot = original_kR - clip_x
+                                    guard_margin = max(4, new_overshoot)
+                                    print(f"[CROP-DBG] crop#{crop_num} valley-clip: "
+                                          f"overshoot={overshoot} valley@col={valley_end} "
+                                          f"clip_x={clip_x} new_overshoot={new_overshoot} "
+                                          f"-> margin={guard_margin}")
+                                else:
+                                    # No valley found — text and weapon
+                                    # contours are continuous. Keep tight.
+                                    guard_margin = 4
+                                    print(f"[CROP-DBG] crop#{crop_num} no valley in "
+                                          f"overshoot={overshoot} cols -> margin=4")
+                            else:
+                                guard_margin = 4
                         else:
                             guard_margin = 4
                         if x0 < original_kR - guard_margin:
                             print(f"[CROP-DBG] crop#{crop_num} left-clamp x0={x0} -> {original_kR - guard_margin} (killer text guard, kR={original_kR}, margin={guard_margin})")
                             x0 = original_kR - guard_margin
+
+                        # Fix 22k: reclaim right edge after killer text
+                        # guard.  When MAX_ICON_W clipped icon_x1 because
+                        # icon_x0 included killer text pixels, the left
+                        # clamp frees width budget.  Extend x1 back
+                        # toward the original contour extent.
+                        if icon_x1_pre_maxw > icon_x1:
+                            # Fix 22L: drop icon_x1_pre_maxw cap.
+                            # When contour includes killer text,
+                            # the contour right-edge understates
+                            # barrel extent.  Let hs_right_limit
+                            # and MAX_ICON_W guard the extension.
+                            reclaim_x1 = min(
+                                hs_right_limit + 2,
+                                x0 + MAX_ICON_W + 2 * pad)
+                            if reclaim_x1 > x1:
+                                print(f"[CROP-DBG] crop#{crop_num} "
+                                      f"reclaim-x1: {x1} -> "
+                                      f"{reclaim_x1} "
+                                      f"(+{reclaim_x1 - x1}px)")
+                                x1 = reclaim_x1
 
                         # Re-apply headshot guard after padding
                         if x1 > hs_right_limit + 2:

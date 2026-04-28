@@ -108,12 +108,15 @@ services:
       - ./vod_processor/match_vod_7.mp4:/app/uploads/match_vod_7.mp4:ro
       - ./vod_processor/match_vod_8.mp4:/app/uploads/match_vod_8.mp4:ro
       - ./vod_processor/match_vod_9.mp4:/app/uploads/match_vod_9.mp4:ro
+      - ./vod_processor/match_vod_10.mp4:/app/uploads/match_vod_10.mp4:ro
+      - ./vod_processor/match_vod_11.mp4:/app/uploads/match_vod_11.mp4:ro
+      - ./vod_processor/match_vod_12.mp4:/app/uploads/match_vod_12.mp4:ro
       # Mount source code for live development (no need to rebuild/copy)
       - ./vod_processor/app:/app/app:ro
       - ./vod_processor/config:/app/config:ro
       - ./vod_processor:/app/vod_processor:ro
       # Mount valorant_resources so model + labels are available
-      - ../valorant_resources:/app/valorant_resources:ro
+      - ./valorant_resources:/app/valorant_resources:ro
     depends_on:
       - redis
       - postgres
