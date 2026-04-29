@@ -1,7 +1,19 @@
 //import { Film } from 'lucide-react';
 import SkyBackground from './components/SkyBackground';
+import { TabProps, Tab } from './components/Tab';
+import {About} from './pages/About';
+import { Home } from './pages/Home';
+import { Routes, Route } from 'react-router-dom';
 
 function App() {
+  const navData: TabProps[] = [
+    { name: "Home", url: "/" },
+    { name: "About", url: "/about" },
+    { name: "API Docs", url: "/apidocs" }
+  ];
+
+
+
   return (
     <div className="min-h-screen">
       <SkyBackground />
@@ -17,8 +29,15 @@ function App() {
           <span className="text-c9-muted text-sm ml-2 tracking-widest uppercase">Cloud9 · Timeline Extractor</span>
         </div>
       </header> */}
-      <div className="pt-10 max-w-7xl mx-auto flex items-center gap-3 justify-center">
-        <div className = "t-30 h-30 w-40 rounded-2xl bg-white p-4 justify-items-center border-2 border-c9-cyan hover:shadow-lg hover:translate-x-0.4 hover:-translate-y-1.5 transition duration-1.5 ease-in-out"
+      <nav className="pt-10 max-w-7xl mx-auto flex items-center gap-3 justify-center">
+        {navData.map((link) => (
+          <Tab
+          key={link.url}
+          name = {link.name}
+          url = {link.url}
+          />
+        ))}
+        {/* <div className = "t-30 h-30 w-40 rounded-2xl bg-white p-4 justify-items-center border-2 border-c9-cyan hover:shadow-lg hover:translate-x-0.4 hover:-translate-y-1.5 transition duration-1.5 ease-in-out"
         >
           <h1 className="text-2xl font-bold tracking-wide">
             <span className="text-c9-cyan font-extrabold">C9</span>
@@ -33,8 +52,12 @@ function App() {
           <h1 className="text-2xl font-bold tracking-wide">
             <span className="text-c9-muted font-light"> C9</span>
           </h1>
-        </div>
-      </div>
+        </div> */}
+      </nav>
+      <Routes>
+        <Route path="/" element={<Home />} />
+        <Route path="/about" element={<About />} />
+      </Routes>
 
       <main className="max-w-7xl mx-auto px-6 py-8">
         <></>
