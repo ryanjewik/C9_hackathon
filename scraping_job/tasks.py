@@ -18,7 +18,7 @@ _tracer = trace.get_tracer(__name__)
 _meter  = metrics.get_meter(__name__)
 
 _scrape_runs = _meter.create_counter(
-    "vlr_scrape_runs_total",
+    "vlr_scrape_runs",
     description="Total VLR scrape task invocations, labelled by status (success|failure)",
 )
 _scrape_duration = _meter.create_histogram(
