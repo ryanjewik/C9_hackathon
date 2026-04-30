@@ -178,9 +178,12 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-cloud9}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=vlr-scraper
     depends_on:
       - redis
       - postgres
+      - otel-collector
     restart: unless-stopped
 
   # ===========================================
@@ -198,10 +201,158 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-cloud9}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=vlr-scraper
     depends_on:
       - redis
       - scraper-worker
+      - otel-collector
     restart: unless-stopped
+
+  # ===========================================
+  # Spring Boot Gateway Service
+  # ===========================================
+  gateway-service:
+    build:
+      context: ./api/gateway-service
+    environment:
+      SERVER_PORT: 8080
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_RESOURCE_ATTRIBUTES: service.name=gateway-service
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: otlp
+      JWT_JWKS_URI: ${JWT_JWKS_URI}
+      JWT_ISSUER: ${JWT_ISSUER}
+      JWT_AUDIENCE: ${JWT_AUDIENCE}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+    ports:
+      - "18080:8080"
+    depends_on:
+      data-service-1:
+        condition: service_healthy
+      data-service-2:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f -u dev:devpass http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ===========================================
+  # Spring Boot Identity Service
+  # ===========================================
+  identity-service:
+    build:
+      context: ./api/identity-service
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SERVER_PORT: 8081
+      JWT_ISSUER: ${JWT_ISSUER}
+      JWT_AUDIENCE: ${JWT_AUDIENCE}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_RESOURCE_ATTRIBUTES: service.name=identity-service
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: otlp
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    expose:
+      - "8081"
+    ports:
+      - "8083:8081"
+    volumes:
+      - ./api/secrets/jwt_private.pem:/run/secrets/jwt_private.pem:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f -u dev:devpass http://localhost:8081/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ===========================================
+  # Spring Boot Data Service (instance 1)
+  # ===========================================
+  data-service-1:
+    build:
+      context: ./api/data-service
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SERVER_PORT: 8080
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_RESOURCE_ATTRIBUTES: service.name=data-service-1
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: otlp
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    expose:
+      - "8080"
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f -u dev:devpass http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ===========================================
+  # Spring Boot Data Service (instance 2)
+  # ===========================================
+  data-service-2:
+    build:
+      context: ./api/data-service
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SERVER_PORT: 8080
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_RESOURCE_ATTRIBUTES: service.name=data-service-2
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: otlp
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    expose:
+      - "8080"
+    ports:
+      - "8082:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f -u dev:devpass http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   # ===========================================
   # Redis for Task Queue
@@ -248,11 +399,110 @@ services:
       timeout: 5s
       retries: 5
 
+  # ===========================================
+  # Observability Stack
+  # ===========================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./api/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  loki:
+    image: grafana/loki:2.8.2
+    container_name: loki
+    user: "0"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./api/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/data
+    ports:
+      - "3100:3100"
+
+  promtail:
+    image: grafana/promtail:2.8.2
+    container_name: promtail
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/log:/var/log:ro
+      - ./api/promtail-config.yaml:/etc/promtail/config.yaml:ro
+      - /etc/machine-id:/etc/machine-id:ro
+    command: -config.file=/etc/promtail/config.yaml
+    depends_on:
+      - loki
+
+  tempo:
+    image: grafana/tempo:1.5.0
+    container_name: tempo
+    user: "0"
+    command: -config.file=/etc/tempo/local-config.yaml
+    volumes:
+      - ./api/tempo-config.yaml:/etc/tempo/local-config.yaml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - "3200:3200"
+      - "9411:9411"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.89.0
+    container_name: otel-collector
+    command: ["--config=/etc/otel-collector/config.yaml"]
+    volumes:
+      - ./api/otel-collector-config.yaml:/etc/otel-collector/config.yaml:ro
+    ports:
+      - "4318:4318"
+      - "4317:4317"
+      - "8888:8888"
+      - "8889:8889"
+
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: redis-exporter
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    ports:
+      - "9121:9121"
+    depends_on:
+      - redis
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: postgres-exporter
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+    ports:
+      - "9187:9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:9.5.2
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - ./api/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"  # 3000 is used by vod-frontend
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+
 volumes:
   vod_uploads:
   vod_outputs:
   redis_data:
   postgres_data:
+  loki_data:
+  tempo_data:
 
 networks:
   default:
