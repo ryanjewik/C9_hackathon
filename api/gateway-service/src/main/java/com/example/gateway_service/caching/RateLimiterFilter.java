@@ -49,6 +49,11 @@ public class RateLimiterFilter implements GlobalFilter {
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
+        // Public dashboard endpoints are exempt from rate limiting
+        if (exchange.getRequest().getPath().value().startsWith("/dashboard/")) {
+            return chain.filter(exchange);
+        }
+
         String _teamId = exchange.getRequest().getHeaders().getFirst("X-Team-Id");
         if (_teamId == null || _teamId.isEmpty()) {
             if (exchange.getRequest().getRemoteAddress() != null && exchange.getRequest().getRemoteAddress().getAddress() != null) {

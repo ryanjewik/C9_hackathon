@@ -14,6 +14,10 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+      '/dashboard': {
+        target: 'http://localhost:18080',
+        changeOrigin: true,
+      },
     },
   },
 })
