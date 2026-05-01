@@ -51,32 +51,27 @@ def _snap_to_team_color_bgr(color: np.ndarray) -> np.ndarray:
     return _TEAM_COLORS_BGR[int(np.argmin(dists))].astype(np.uint8)
 
 
-def _dominant_team_color_bgr(bgr_img: np.ndarray, sat_threshold: int = 40) -> np.ndarray:
-    """Detect background team colour using majority vote among saturated pixels
-    across the entire image.
+def _dominant_team_color_bgr(bgr_img: np.ndarray) -> np.ndarray:
+    """Detect background team colour from the bulk of the crop.
 
-    Each pixel whose HSV saturation exceeds sat_threshold votes for its nearest
-    canonical team colour (teal or red).  The large flat background region
-    dominates by pixel count over any thin contaminated border strip or icon
-    content, so this is robust to kill-feed row bleed (purple, magenta, etc.).
-
-    Falls back to a snapped edge-median if no saturated pixels are found.
+    Trims the right ~20% (victim-team bleed) and bottom ~25% (UI bar artifact)
+    then votes all remaining non-white pixels for the nearest canonical team
+    colour (teal or red).  The large flat background area dominates by pixel
+    count over the smaller icon region.
     """
-    import cv2 as _cv2
-    hsv = _cv2.cvtColor(bgr_img, _cv2.COLOR_BGR2HSV)
-    sat_mask = hsv[:, :, 1] > sat_threshold
-    if sat_mask.any():
-        pixels = bgr_img[sat_mask].astype(np.float32)          # (N, 3)
-        dists = np.linalg.norm(
-            pixels[:, None, :] - _TEAM_COLORS_BGR[None, :, :], axis=2
-        )                                                        # (N, 2)
-        winner = int(np.bincount(np.argmin(dists, axis=1), minlength=len(_TEAM_COLORS_BGR)).argmax())
-        return _TEAM_COLORS_BGR[winner].astype(np.uint8)
-    # Fallback — no saturated pixels (e.g. greyscale / very washed-out crop)
-    edges = np.concatenate(
-        [bgr_img[0, :], bgr_img[-1, :], bgr_img[:, 0], bgr_img[:, -1]], axis=0
-    )
-    return _snap_to_team_color_bgr(np.median(edges, axis=0))
+    h, w = bgr_img.shape[:2]
+    trimmed = bgr_img[:int(h * 0.75), :int(w * 0.80)]
+    pixels = trimmed.reshape(-1, 3).astype(np.float32)
+    # Exclude near-white pixels so UI overlays don't skew the vote
+    not_white = ~np.all(pixels > 200, axis=1)
+    pixels = pixels[not_white]
+    if len(pixels) == 0:
+        pixels = bgr_img.reshape(-1, 3).astype(np.float32)
+    dists = np.linalg.norm(
+        pixels[:, None, :] - _TEAM_COLORS_BGR[None, :, :], axis=2
+    )  # (N, 2)
+    winner = int(np.bincount(np.argmin(dists, axis=1), minlength=2).argmax())
+    return _TEAM_COLORS_BGR[winner].astype(np.uint8)
 
 
 def _letterbox_bgr(bgr_img: np.ndarray, target_w: int, target_h: int,
@@ -140,11 +135,12 @@ def _content_zoom_bgr(bgr_img: np.ndarray, min_fill: float = 0.6) -> np.ndarray:
     # colour (teal or red).  This removes both the primary background AND any
     # bleed from the adjacent kill-feed row (e.g. the victim's team colour on
     # the right edge) — neither colour ever appears in the icon itself.
-    dists_to_canonical = np.linalg.norm(
+    dists_per_team = np.linalg.norm(
         bgr_img.astype(np.float32)[:, :, np.newaxis, :] - _TEAM_COLORS_BGR[np.newaxis, np.newaxis, :, :],
         axis=3,
-    ).min(axis=2)  # shape (h, w) — distance to nearest canonical colour
-    mask = dists_to_canonical > 40
+    )  # shape (h, w, 2) — per-team distances kept for bleed detection
+    dists_to_canonical = dists_per_team.min(axis=2)  # shape (h, w) — distance to nearest canonical colour
+    mask = dists_to_canonical > 28
 
     cols = np.any(mask, axis=0)
     if not cols.any():
@@ -160,10 +156,19 @@ def _content_zoom_bgr(bgr_img: np.ndarray, min_fill: float = 0.6) -> np.ndarray:
     y1 = int(np.where(rows)[0][0])  if rows.any() else 0
     y2 = int(np.where(rows)[0][-1]) if rows.any() else h - 1
 
+    # Cap right margin before victim-team bleed zone so the 15% padding
+    # doesn't pull bleed pixels into the re-letterboxed crop.
+    killer_idx = int(np.argmin(np.linalg.norm(_TEAM_COLORS_BGR - bg_color.astype(np.float32), axis=1)))
+    victim_idx = 1 - killer_idx
+    victim_col_frac = (dists_per_team[:, :, victim_idx] < 45).mean(axis=0)  # (w,)
+    right_victim = np.where(victim_col_frac[x2 + 1:] > 0.25)[0]
+    bleed_start = (x2 + 1 + int(right_victim[0])) if len(right_victim) > 0 else w
+
     # Add 15% margin so we don't clip icon edges
     mx = max(2, int(0.15 * content_w))
     my = max(2, int(0.15 * (y2 - y1 + 1)))
-    x1 = max(0, x1 - mx);  x2 = min(w - 1, x2 + mx)
+    x1 = max(0, x1 - mx)
+    x2 = max(x1 + 1, min(bleed_start - 1, x2 + mx))  # stop before bleed zone
     y1 = max(0, y1 - my);  y2 = min(h - 1, y2 + my)
 
     cropped = bgr_img[y1:y2 + 1, x1:x2 + 1]
@@ -173,14 +178,24 @@ def _content_zoom_bgr(bgr_img: np.ndarray, min_fill: float = 0.6) -> np.ndarray:
     return _letterbox_bgr(cropped, w, h, pad_color=bg_color.astype(np.uint8))
 
 
-def _unsharp_mask_bgr(bgr_img: np.ndarray, amount: float = 0.8, kernel_size: int = 3, sigma: float = 1.0) -> np.ndarray:
+def _unsharp_mask_bgr(bgr_img: np.ndarray, amount: float = 1.2, kernel_size: int = 3, sigma: float = 1.0) -> np.ndarray:
     """Sharpens icon edges via unsharp mask — improves contour detection for
     small ability icons blurred by broadcast compression.  Must match the
-    SharpenTransform(amount=0.8) applied to val data in train_cnn.py."""
+    SharpenTransform(amount=1.2) applied to val data in train_cnn.py."""
     import cv2
     arr = bgr_img.astype(np.float32)
     blurred = cv2.GaussianBlur(arr, (kernel_size, kernel_size), sigma)
     return np.clip(arr * (1.0 + amount) - blurred * amount, 0, 255).astype(np.uint8)
+
+
+def _clahe_bgr(bgr_img: np.ndarray, clip_limit: float = 2.0, tile_grid: tuple = (4, 4)) -> np.ndarray:
+    """CLAHE in LAB space — recovers local contrast crushed by broadcast JPEG encoding.
+    Must match CLAHETransform() applied to val data in train_cnn.py."""
+    import cv2
+    lab = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2LAB)
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid)
+    lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
 
 def _build_model(num_classes: int):
@@ -317,8 +332,12 @@ class IconCNNClassifier:
             # resize it to fill the canvas so the CNN sees more icon pixels.
             bgr_img = _content_zoom_bgr(bgr_img)
 
+            # CLAHE — recovers local contrast crushed by broadcast JPEG encoding.
+            # Must match CLAHETransform() applied to val data in train_cnn.py.
+            bgr_img = _clahe_bgr(bgr_img)
+
             # Unsharp mask — sharpens icon edges blurred by broadcast compression.
-            # Must match SharpenTransform(amount=0.8) applied to val data in training.
+            # Must match SharpenTransform(amount=1.2) applied to val data in training.
             bgr_img = _unsharp_mask_bgr(bgr_img)
 
             # OpenCV BGR → PIL RGB

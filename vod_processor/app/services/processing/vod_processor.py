@@ -373,7 +373,7 @@ class VODProcessor:
                 # Attach CNN classifier for weapon/ability recognition
                 try:
                     from app.services.processing.icon_classifier import IconCNNClassifier
-                    classifier = IconCNNClassifier()
+                    classifier = IconCNNClassifier(confidence_threshold=0.5)
                     killfeed_detector.set_weapon_classifier(classifier)
                     print(f"[{job_id}] Icon CNN classifier attached to KillfeedDetector")
                 except Exception as _clf_err:
@@ -3486,13 +3486,23 @@ class KillfeedDetector(BaseDetector):
             )
             cv2.imwrite(crop_path, icon_img)
 
-            # Save ult badge crop if detected
+            # Classify and save ult badge crop if detected
             if ult_badge_img is not None:
-                ult_dir = os.path.join(self._crop_output_dir, "ult_badge")
-                os.makedirs(ult_dir, exist_ok=True)
+                ult_label = self._classify_weapon(ult_badge_img)
+                conf_str = ""
+                try:
+                    clf = getattr(self, '_weapon_classifier', None)
+                    if clf is not None and hasattr(clf, 'classify_with_confidence'):
+                        _, ult_conf = clf.classify_with_confidence(ult_badge_img)
+                        conf_str = f"_conf{ult_conf:.2f}"
+                except Exception:
+                    pass
+                print(f"[ULT-CNN] {pc['killer_name']} -> {pc['victim_name']}: ult_badge={ult_label}{conf_str}")
+                ult_label_dir = os.path.join(self._crop_output_dir, "ult_badge", ult_label)
+                os.makedirs(ult_label_dir, exist_ok=True)
                 ult_path = os.path.join(
-                    ult_dir,
-                    f"ult_{self._crop_counter:05d}_t{int(t_ms)}ms.png"
+                    ult_label_dir,
+                    f"ult_{self._crop_counter:05d}_t{int(t_ms)}ms{conf_str}.png"
                 )
                 cv2.imwrite(ult_path, ult_badge_img)
 
@@ -4102,7 +4112,42 @@ class KillfeedDetector(BaseDetector):
         _orange_valid_geom = any(rh >= _min_rh and rw >= _min_rw for _, _, rw, rh in orange_regions)
         if not (_teal_valid_geom or _orange_valid_geom):
             return None
-        
+
+        # Reject studio overlays / arena screens that produce wide background patches.
+        # Real killfeed name boxes are 20-40% of row width each; camera-pan overlays
+        # (player cards, scoreboards) produce single colour regions spanning the full
+        # row and reliably exceed 55% of row width.  Only check valid-geometry regions
+        # so small noise contours don't affect the decision.
+        _max_valid_teal_rw   = max((rw for _, _, rw, rh in teal_regions   if rh >= _min_rh and rw >= _min_rw), default=0)
+        _max_valid_orange_rw = max((rw for _, _, rw, rh in orange_regions  if rh >= _min_rh and rw >= _min_rw), default=0)
+        if _max_valid_teal_rw > w * 0.55 or _max_valid_orange_rw > w * 0.55:
+            return None
+
+        # Overlay rejection: two independent signals, either one is sufficient to reject.
+        #
+        # Signal 1 — secondary orange hue (H=160-180) with low brightness:
+        #   Real killfeed name-boxes use primary orange (H=0-25) or teal (H=75-115).
+        #   The secondary range only triggers on dark maroon backgrounds from end-of-round
+        #   player-card overlays.  Mean V of those pixels ≈ 80-120; threshold at 140.
+        #
+        # Signal 2 — row-level darkness fraction:
+        #   Pixel analysis across 144 real crops: max dark% (V<60) = 18.4%.
+        #   Both fake overlay crops: 32.2% and 60.4%.  Threshold at 25% (7pp margin).
+        #   Provides a complementary catch if signal 1 is diluted by bright skin-tone pixels.
+        _sec_orange_mask = cv2.inRange(
+            hsv,
+            np.array([160, 80, 100], dtype=np.uint8),
+            np.array([180, 255, 255], dtype=np.uint8),
+        )
+        _sec_maroon_triggered = (
+            cv2.countNonZero(_sec_orange_mask) > 0
+            and float(np.mean(hsv[:, :, 2][_sec_orange_mask > 0])) < 140
+        )
+        _dark_frac = float(np.sum(hsv[:, :, 2] < 60)) / (h * w)
+        _dark_triggered = _dark_frac > 0.25
+        if _sec_maroon_triggered or _dark_triggered:
+            return None
+
         all_regions = []
         for x, _, rw, _ in teal_regions:
             all_regions.append({"color": "teal", "x": x, "center": x + rw // 2})
@@ -4358,6 +4403,19 @@ class KillfeedDetector(BaseDetector):
         clf = getattr(self, '_weapon_classifier', None)
         if clf is None:
             return "unknown"
+
+        # Brightness pre-filter: real killfeed icons have a bright saturated
+        # background (mean HSV-V ≥ 160).  Crops extracted from full-screen
+        # overlays (e.g. end-of-round player-card panels) have a dark maroon
+        # background and produce mean_V < 120.  Analysis of 144 real crops
+        # showed the lowest real mean_V was 160; fake overlay crops measured
+        # 80 and 117 — a clean 43-point gap.  Threshold at 140 to be safe.
+        try:
+            _hsv_v = cv2.cvtColor(icon_img, cv2.COLOR_BGR2HSV)[:, :, 2]
+            if float(np.mean(_hsv_v)) < 140:
+                return "unknown"
+        except Exception:
+            pass  # if conversion fails, fall through to CNN
 
         # Try a few common method names to be flexible
         for method in ('classify', 'predict', 'infer'):
@@ -4870,7 +4928,7 @@ class KillfeedDetector(BaseDetector):
                                 if valley_end >= 0:
                                     clip_x = check_x0 + valley_end
                                     new_overshoot = original_kR - clip_x
-                                    guard_margin = max(4, new_overshoot)
+                                    guard_margin = max(4, min(new_overshoot, 8))  # cap: never allow >8px left of kR
                                     print(f"[CROP-DBG] crop#{crop_num} valley-clip: "
                                           f"overshoot={overshoot} valley@col={valley_end} "
                                           f"clip_x={clip_x} new_overshoot={new_overshoot} "

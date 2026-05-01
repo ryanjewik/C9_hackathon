@@ -95,11 +95,12 @@ def _content_zoom_pil(pil_img: PILImage.Image, min_fill: float = 0.6) -> PILImag
     # This strips the primary background AND victim-team bleed on the right edge.
     # _TEAM_COLORS_BGR in RGB space: reverse channel order.
     team_colors_rgb = _TEAM_COLORS_BGR[:, ::-1]  # (2, 3) RGB
-    dists_to_canonical = np.linalg.norm(
+    dists_per_team = np.linalg.norm(
         arr.astype(np.float32)[:, :, np.newaxis, :] - team_colors_rgb[np.newaxis, np.newaxis, :, :],
         axis=3,
-    ).min(axis=2)  # shape (h, w)
-    mask = dists_to_canonical > 40
+    )  # shape (h, w, 2) — per-team distances kept for bleed detection
+    dists_to_canonical = dists_per_team.min(axis=2)  # shape (h, w)
+    mask = dists_to_canonical > 28
 
     cols = np.any(mask, axis=0)
     if not cols.any():
@@ -113,9 +114,22 @@ def _content_zoom_pil(pil_img: PILImage.Image, min_fill: float = 0.6) -> PILImag
     y1 = int(np.where(rows)[0][0])  if rows.any() else 0
     y2 = int(np.where(rows)[0][-1]) if rows.any() else h - 1
 
-    mx = max(2, int(0.15 * (x2 - x1 + 1)))
+    # Cap right margin before victim-team bleed zone so the 15% padding
+    # doesn't pull bleed pixels into the re-letterboxed crop.
+    # bg_bgr is BGR; _TEAM_COLORS_BGR is also BGR — compare directly.
+    killer_idx = int(np.argmin(np.linalg.norm(_TEAM_COLORS_BGR - bg_bgr.astype(np.float32), axis=1)))
+    victim_idx = 1 - killer_idx
+    # dists_per_team is in RGB space but distances are symmetric — victim_idx
+    # still correctly selects the opposite team's distance channel.
+    victim_col_frac = (dists_per_team[:, :, victim_idx] < 45).mean(axis=0)  # (w,)
+    right_victim = np.where(victim_col_frac[x2 + 1:] > 0.25)[0]
+    bleed_start = (x2 + 1 + int(right_victim[0])) if len(right_victim) > 0 else w
+
+    content_w = x2 - x1 + 1
+    mx = max(2, int(0.15 * content_w))
     my = max(2, int(0.15 * (y2 - y1 + 1)))
-    x1 = max(0, x1 - mx);  x2 = min(w - 1, x2 + mx)
+    x1 = max(0, x1 - mx)
+    x2 = max(x1 + 1, min(bleed_start - 1, x2 + mx))  # stop before bleed zone
     y1 = max(0, y1 - my);  y2 = min(h - 1, y2 + my)
 
     cropped = arr[y1:y2 + 1, x1:x2 + 1]
@@ -153,6 +167,24 @@ class SharpenTransform:
             arr * (1.0 + self.amount) - blurred * self.amount, 0, 255
         ).astype(np.uint8)
         return PILImage.fromarray(sharpened)
+
+
+class CLAHETransform:
+    """CLAHE (Contrast-Limited Adaptive Histogram Equalization) in LAB space.
+    Recovers local contrast crushed by broadcast JPEG encoding — particularly
+    critical for ability icon ring edges and inner symbol detail in real crops.
+    Must be applied consistently at training and inference."""
+    def __init__(self, clip_limit: float = 2.0, tile_grid: tuple = (4, 4)):
+        self.clip_limit = clip_limit
+        self.tile_grid = tile_grid
+
+    def __call__(self, pil_img: PILImage.Image) -> PILImage.Image:
+        arr = np.array(pil_img.convert("RGB"))
+        lab = cv2.cvtColor(arr, cv2.COLOR_RGB2LAB)
+        clahe = cv2.createCLAHE(clipLimit=self.clip_limit, tileGridSize=self.tile_grid)
+        lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+        return PILImage.fromarray(cv2.cvtColor(lab, cv2.COLOR_LAB2RGB))
+
 
 # ---------------- CONFIG ----------------
 
@@ -196,6 +228,7 @@ train_transform = transforms.Compose([
 real_train_transform = transforms.Compose([
     LetterboxTransform(IMG_W, IMG_H),
     ContentZoomTransform(min_fill=0.6),
+    CLAHETransform(),
     transforms.RandomApply([SharpenTransform(amount=1.2)], p=0.5),
     transforms.RandomAffine(degrees=3, translate=(0.06, 0.06), scale=(0.85, 1.15)),
     transforms.ColorJitter(brightness=0.3, contrast=0.25, saturation=0.2, hue=0.05),
@@ -207,17 +240,19 @@ val_transform = transforms.Compose([
     transforms.Resize((IMG_H, IMG_W)),
     # Zoom small ability icons — must match inference pipeline
     ContentZoomTransform(min_fill=0.6),
-    # Deterministic mild sharpening — matches what icon_classifier.py applies
-    # at inference time so val accuracy reflects real-world performance.
-    SharpenTransform(amount=0.8),
+    # CLAHE: recover local contrast crushed by broadcast JPEG — must match inference.
+    CLAHETransform(),
+    # Deterministic sharpening — matches what icon_classifier.py applies at inference.
+    SharpenTransform(amount=1.2),
     transforms.ToTensor(),
 ])
 
-# Real val: letterbox + zoom + sharpen (matching inference) then to tensor — no augmentation
+# Real val: letterbox + zoom + CLAHE + sharpen (matching inference) then to tensor — no augmentation
 real_val_transform = transforms.Compose([
     LetterboxTransform(IMG_W, IMG_H),
     ContentZoomTransform(min_fill=0.6),
-    SharpenTransform(amount=0.8),
+    CLAHETransform(),
+    SharpenTransform(amount=1.2),
     transforms.ToTensor(),
 ])
 
