@@ -25,6 +25,14 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+# Instrument the requests library so every HTTP call to vlr.gg gets an OTEL span.
+# Gracefully skipped if opentelemetry packages are not installed.
+try:
+    from opentelemetry.instrumentation.requests import RequestsInstrumentor
+    RequestsInstrumentor().instrument()
+except ImportError:
+    pass
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
