@@ -111,6 +111,8 @@ services:
       - ./vod_processor/match_vod_10.mp4:/app/uploads/match_vod_10.mp4:ro
       - ./vod_processor/match_vod_11.mp4:/app/uploads/match_vod_11.mp4:ro
       - ./vod_processor/match_vod_12.mp4:/app/uploads/match_vod_12.mp4:ro
+      - ./vod_processor/match_vod_13.mp4:/app/uploads/match_vod_13.mp4:ro
+      - ./vod_processor/match_vod_14.mp4:/app/uploads/match_vod_14.mp4:ro
       # Mount source code for live development (no need to rebuild/copy)
       - ./vod_processor/app:/app/app:ro
       - ./vod_processor/config:/app/config:ro
