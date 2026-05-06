@@ -23,4 +23,21 @@ public interface MapVetoRepository extends JpaRepository<MapVeto, Integer> {
 
     @Query("SELECT DISTINCT m FROM MapVeto m LEFT JOIN FETCH m.teamEntity LEFT JOIN FETCH m.matchEntity WHERE m.id IN :ids")
     java.util.List<com.example.data_service.entity.MapVeto> findAllWithRelationsByIdIn(@Param("ids") java.util.List<Integer> ids);
+
+    @Query(value = """
+            WITH ban_counts AS (
+                SELECT mv.map_selected AS map, COUNT(mv.map_selected) AS ban_count
+                FROM esports_map_veto AS mv
+                INNER JOIN esports_matches AS m ON m.id = mv.match_id
+                WHERE m.date >= CURRENT_DATE - INTERVAL '3 months' AND mv.type = 'ban' AND mv.team_id = :teamId
+                GROUP BY mv.map_selected
+            )
+            SELECT mv.map_selected, COUNT(mv.map_selected) - b.ban_count AS pick_count, b.ban_count
+            FROM esports_map_veto AS mv
+            INNER JOIN esports_matches AS m ON m.id = mv.match_id
+            INNER JOIN ban_counts AS b ON b.map = mv.map_selected
+            WHERE m.date >= CURRENT_DATE - INTERVAL '3 months' AND mv.team_id = :teamId
+            GROUP BY mv.map_selected, b.ban_count
+            """, nativeQuery = true)
+    java.util.List<Object[]> findMapStatsByTeamId(@Param("teamId") Integer teamId);
 }
