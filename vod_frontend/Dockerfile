@@ -3,10 +3,10 @@ FROM node:20-alpine AS build
 WORKDIR /app
 
 # Copy package files
-COPY package.json ./
+COPY package.json package-lock.json ./
 
-# Install dependencies
-RUN npm install
+# Install dependencies using mirror to avoid network timeouts
+RUN npm ci --registry https://registry.npmmirror.com
 
 # Copy source code
 COPY . .

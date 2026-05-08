@@ -20,7 +20,7 @@ public interface PlayerGameRepository extends JpaRepository<PlayerGame, Integer>
 
     @Query(value = """
             SELECT p.nickname,
-                   ARRAY_AGG(DISTINCT pg.agent) AS agents,
+                   STRING_AGG(DISTINCT pg.agent, ',') AS agents,
                    AVG(pg.rating) AS average_rating,
                    SUM(pg.kills) AS kills,
                    SUM(pg.deaths) AS deaths,

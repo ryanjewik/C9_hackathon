@@ -19,12 +19,12 @@ public class PlayerStatsService {
     public List<PlayerStatsDto> getTopPlayerStats() {
         return repository.findTopPlayerStats().stream()
             .map(row -> {
-                // ARRAY_AGG returns a java.sql.Array in native queries
                 List<String> agents;
-                try {
-                    Object[] arr = (Object[]) ((java.sql.Array) row[1]).getArray();
-                    agents = Arrays.stream(arr).map(Object::toString).collect(Collectors.toList());
-                } catch (Exception e) {
+                Object agentsObj = row[1];
+                // STRING_AGG returns a plain comma-separated String
+                if (agentsObj instanceof String str && !str.isBlank()) {
+                    agents = Arrays.asList(str.split(","));
+                } else {
                     agents = List.of();
                 }
                 return new PlayerStatsDto(
