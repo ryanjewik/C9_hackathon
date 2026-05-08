@@ -17,11 +17,18 @@ public class PlayerStatsService {
     private PlayerGameRepository repository;
 
     public List<PlayerStatsDto> getTopPlayerStats() {
-        return repository.findTopPlayerStats().stream()
+        return mapPlayerStats(repository.findTopPlayerStats());
+    }
+
+    public List<PlayerStatsDto> getBottomPlayerStats() {
+        return mapPlayerStats(repository.findBottomPlayerStats());
+    }
+
+    private List<PlayerStatsDto> mapPlayerStats(java.util.List<Object[]> rows) {
+        return rows.stream()
             .map(row -> {
                 List<String> agents;
                 Object agentsObj = row[1];
-                // STRING_AGG returns a plain comma-separated String
                 if (agentsObj instanceof String str && !str.isBlank()) {
                     agents = Arrays.asList(str.split(","));
                 } else {

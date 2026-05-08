@@ -35,9 +35,30 @@ public interface PlayerGameRepository extends JpaRepository<PlayerGame, Integer>
             WHERE m.date >= CURRENT_DATE - INTERVAL '2 weeks' AND t.tier = 'VCT'
             GROUP BY p.nickname
             ORDER BY average_rating DESC
-            LIMIT 10
+            LIMIT 25
             """, nativeQuery = true)
     java.util.List<Object[]> findTopPlayerStats();
+
+    @Query(value = """
+            SELECT p.nickname,
+                   STRING_AGG(DISTINCT pg.agent, ',') AS agents,
+                   AVG(pg.rating) AS average_rating,
+                   SUM(pg.kills) AS kills,
+                   SUM(pg.deaths) AS deaths,
+                   SUM(pg.assists) AS assists,
+                   SUM(pg.fk) AS first_kills,
+                   SUM(pg.fd) AS first_deaths
+            FROM esports_matches AS m
+            INNER JOIN esports_tournaments AS t ON m.tournament_id = t.id
+            INNER JOIN esports_player_games AS pg ON pg.match_id = m.id
+            INNER JOIN esports_players AS p ON p.id = pg.player_id
+            INNER JOIN esports_teams AS tm ON pg.team_id = tm.id
+            WHERE m.date >= CURRENT_DATE - INTERVAL '2 weeks' AND t.tier = 'VCT'
+            GROUP BY p.nickname
+            ORDER BY average_rating ASC
+            LIMIT 25
+            """, nativeQuery = true)
+    java.util.List<Object[]> findBottomPlayerStats();
 
     @Query(value = """
             WITH total_matches AS (

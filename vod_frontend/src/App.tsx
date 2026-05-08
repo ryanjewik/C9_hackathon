@@ -36,7 +36,7 @@ function App() {
           <span className="text-c9-muted text-sm ml-2 tracking-widest uppercase">Cloud9 · Timeline Extractor</span>
         </div>
       </header> */}
-      <nav className="py-10 max-w-7xl mx-auto flex items-center gap-3 justify-center">
+      <nav className="py-10 max-w-7xl mx-auto px-48 flex items-center gap-3 justify-center">
         {navData.map((link) => (
           <Tab
           key={link.url}
