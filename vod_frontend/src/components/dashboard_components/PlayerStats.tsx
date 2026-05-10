@@ -64,7 +64,7 @@ export function PlayerStats() {
   useEffect(() => {
     async function fetchAgentStats() {
       try {
-        const response = await fetch('/dashboard/agent_stats');
+        const response = await fetch(`/dashboard/agent_stats?sort=${sort}`);
         if (!response.ok) return;
         const data = await response.json();
         setAgentStats(Array.isArray(data) ? data : []);
@@ -73,7 +73,7 @@ export function PlayerStats() {
       }
     }
     fetchAgentStats();
-  }, []);
+  }, [sort]);
 
   return (
     <div className="h-full rounded-2xl bg-white bg-opacity-55 p-4 border-2 border-c9-cyan hover:shadow-lg hover:-translate-y-1.5 transition duration-1000 ease-in-out">
@@ -118,7 +118,7 @@ export function PlayerStats() {
       <p className="text-xs text-c9-muted mb-3">
         {mode === 'overall'
           ? `${sort === 'top' ? 'Top' : 'Bottom'} 25 VCT Players — Last 2 Weeks`
-          : 'Best VCT Player Per Agent — Last 90 Days'}
+          : `${sort === 'top' ? 'Best' : 'Worst'} VCT Player Per Agent — Last 90 Days`}
       </p>
 
       <div className="pb-4 pr-1">

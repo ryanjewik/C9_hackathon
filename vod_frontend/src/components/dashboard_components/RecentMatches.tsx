@@ -104,19 +104,19 @@ function CustomTooltip({ active, payload, label }: TooltipProps) {
 
 interface TrendTooltipProps {
   active?: boolean;
-  payload?: { name: string; value: number; color: string; payload: { won: boolean; score: string } }[];
-  label?: string;
+  payload?: { name: string; value: number; color: string; payload: { won: boolean; score: string; opponent: string } }[];
+  label?: number;
 }
-function TrendTooltip({ active, payload, label }: TrendTooltipProps) {
+function TrendTooltip({ active, payload }: TrendTooltipProps) {
   if (!active || !payload?.length) return null;
-  const d = payload[0]?.payload;
+  const d = (payload.find(p => p.name === 'W/L') ?? payload[0])?.payload;
   return (
     <div className="bg-white border border-c9-cyan rounded-lg px-3 py-2 shadow text-sm text-c9-text">
-      <div className="font-semibold mb-1">vs {label}</div>
+      <div className="font-semibold mb-1">vs {d?.opponent}</div>
       <div style={{ color: d?.won ? WIN_COLOR : LOSS_COLOR }} className="font-bold">{d?.won ? 'Win' : 'Loss'} — {d?.score}</div>
-      {payload.find(p => p.name === 'Win Rate') && (
+      {payload.find(p => p.name === '5-game Win %') && (
         <div style={{ color: TREND_COLOR }}>
-          Win Rate: <span className="font-bold">{payload.find(p => p.name === 'Win Rate')!.value}%</span>
+          5-game Win %: <span className="font-bold">{payload.find(p => p.name === '5-game Win %')!.value}%</span>
         </div>
       )}
     </div>
@@ -149,8 +149,7 @@ function WinRateTrendChart({ teamName, history }: { teamName: string; history: M
     const window = ordered.slice(Math.max(0, i - 4), i + 1);
     const winRate = Math.round((window.filter(w => w.won).length / window.length) * 100);
     const short = m.opponentName.length > 8 ? m.opponentName.slice(0, 7) + '…' : m.opponentName;
-    return {
-      opponent: short,
+    return {      idx: i,      opponent: short,
       result: 1,
       winRate,
       won: m.won,
@@ -170,7 +169,7 @@ function WinRateTrendChart({ teamName, history }: { teamName: string; history: M
       <ResponsiveContainer width="100%" height={180}>
         <ComposedChart data={data} margin={{ top: 4, right: 8, bottom: 24, left: -10 }}>
           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#d0e8f0" />
-          <XAxis dataKey="opponent" tick={{ fontSize: 9, fill: '#6b8ca8' }} tickLine={false} angle={-30} textAnchor="end" interval={0} />
+          <XAxis dataKey="idx" tickFormatter={(i: number) => data[i]?.opponent ?? ''} tick={{ fontSize: 9, fill: '#6b8ca8' }} tickLine={false} angle={-30} textAnchor="end" interval={0} />
           <YAxis yAxisId="left" domain={[0, 1]} tickFormatter={() => ''} tickLine={false} axisLine={false} width={16} />
           <YAxis yAxisId="right" orientation="right" domain={[0, 100]} tickFormatter={(v) => `${v}%`} tick={{ fontSize: 9, fill: '#6b8ca8' }} tickLine={false} axisLine={false} width={32} />
           <Tooltip content={<TrendTooltip />} cursor={{ fill: 'rgba(77,217,232,0.08)' }} />
@@ -180,7 +179,7 @@ function WinRateTrendChart({ teamName, history }: { teamName: string; history: M
               <Cell key={i} fill={d.won ? WIN_COLOR : LOSS_COLOR} />
             ))}
           </Bar>
-          <Line yAxisId="right" type="monotone" dataKey="winRate" name="Win Rate" stroke={TREND_COLOR} strokeWidth={2} dot={{ r: 3, fill: TREND_COLOR }} />
+          <Line yAxisId="right" type="monotone" dataKey="winRate" name="5-game Win %" stroke={TREND_COLOR} strokeWidth={2} dot={{ r: 3, fill: TREND_COLOR }} />
         </ComposedChart>
       </ResponsiveContainer>
     </div>

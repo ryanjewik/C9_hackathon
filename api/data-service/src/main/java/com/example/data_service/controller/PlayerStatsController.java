@@ -29,8 +29,12 @@ public class PlayerStatsController {
     }
 
     @GetMapping("/agent_stats")
-    public ResponseEntity<List<AgentStatsDto>> getTopPlayerPerAgent() {
-        return ResponseEntity.ok(service.getTopPlayerPerAgent());
+    public ResponseEntity<List<AgentStatsDto>> getPlayerPerAgent(
+            @RequestParam(defaultValue = "top") String sort) {
+        List<AgentStatsDto> result = "bottom".equalsIgnoreCase(sort)
+            ? service.getBottomPlayerPerAgent()
+            : service.getTopPlayerPerAgent();
+        return ResponseEntity.ok(result);
     }
 
     @GetMapping("/agent_pickrates")

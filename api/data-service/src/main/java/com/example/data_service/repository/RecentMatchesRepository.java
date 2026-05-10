@@ -15,7 +15,11 @@ public interface RecentMatchesRepository extends JpaRepository<Match, Integer> {
     @Query(value = """
         SELECT
             m.date,
-            CASE WHEN m.winner = :teamId THEN true ELSE false END AS won,
+            CASE
+                WHEN m.team_1_id = :teamId AND m.team_1_score > m.team_2_score THEN true
+                WHEN m.team_2_id = :teamId AND m.team_2_score > m.team_1_score THEN true
+                ELSE false
+            END AS won,
             CASE WHEN m.team_1_id = :teamId THEN m.team_2_name ELSE m.team_1_name END AS opponent_name,
             CASE WHEN m.team_1_id = :teamId THEN m.team_1_score ELSE m.team_2_score END AS team_score,
             CASE WHEN m.team_1_id = :teamId THEN m.team_2_score ELSE m.team_1_score END AS opponent_score,

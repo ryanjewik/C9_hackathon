@@ -74,4 +74,19 @@ public class PlayerStatsService {
             ))
             .collect(Collectors.toList());
     }
+
+    public List<AgentStatsDto> getBottomPlayerPerAgent() {
+        return repository.findBottomPlayerPerAgent().stream()
+            .map(row -> new AgentStatsDto(
+                (String) row[0],
+                (String) row[1],
+                row[2] != null ? ((Number) row[2]).doubleValue() : null,
+                row[3] != null ? ((Number) row[3]).longValue() : null,
+                row[4] != null ? ((Number) row[4]).longValue() : null,
+                row[5] != null ? ((Number) row[5]).longValue() : null,
+                row[6] != null ? ((Number) row[6]).longValue() : null,
+                row[7] != null ? ((Number) row[7]).longValue() : null
+            ))
+            .collect(Collectors.toList());
+    }
 }

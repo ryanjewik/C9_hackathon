@@ -105,4 +105,31 @@ public interface PlayerGameRepository extends JpaRepository<PlayerGame, Integer>
             ORDER BY agent, average_rating DESC
             """, nativeQuery = true)
     java.util.List<Object[]> findTopPlayerPerAgent();
+
+    @Query(value = """
+            WITH AgentStats AS (
+                SELECT
+                    p.nickname,
+                    pg.agent,
+                    AVG(pg.rating) AS average_rating,
+                    SUM(pg.kills) AS kills,
+                    SUM(pg.deaths) AS deaths,
+                    SUM(pg.assists) AS assists,
+                    SUM(pg.fk) AS first_kills,
+                    SUM(pg.fd) AS first_deaths
+                FROM esports_matches AS m
+                INNER JOIN esports_tournaments AS t ON m.tournament_id = t.id
+                INNER JOIN esports_player_games AS pg ON pg.match_id = m.id
+                INNER JOIN esports_players AS p ON p.id = pg.player_id
+                INNER JOIN esports_teams AS tm ON pg.team_id = tm.id
+                WHERE m.date >= CURRENT_DATE - INTERVAL '90 days'
+                  AND t.tier = 'VCT'
+                  AND pg.rating IS NOT NULL
+                GROUP BY p.nickname, pg.agent
+            )
+            SELECT DISTINCT ON (agent) *
+            FROM AgentStats
+            ORDER BY agent, average_rating ASC
+            """, nativeQuery = true)
+    java.util.List<Object[]> findBottomPlayerPerAgent();
 }
