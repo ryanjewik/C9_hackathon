@@ -4,6 +4,8 @@ import SkyBackground from './components/SkyBackground';
 import { TabProps, Tab } from './components/Tab';
 import {About} from './pages/About';
 import { Home } from './pages/Home';
+import { Vods } from './pages/Vods';
+import { ApiDocs } from './pages/ApiDocs';
 import { Routes, Route, useNavigate } from 'react-router-dom';
 
 function App() {
@@ -54,6 +56,8 @@ function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/about" element={<About />} />
+        <Route path="/vods" element={<Vods />} />
+        <Route path="/apidocs" element={<ApiDocs />} />
       </Routes>
 
       <main className="max-w-7xl mx-auto px-6 py-8">
