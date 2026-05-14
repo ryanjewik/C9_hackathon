@@ -211,8 +211,10 @@ export function RecentMatches() {
   const [mapStats, setMapStats] = useState<Record<number, MapStat[]>>({});
   const [matchHistory, setMatchHistory] = useState<Record<number, MatchHistoryEntry[]>>({});
   const [activeIdx, setActiveIdx] = useState(0);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const fetchStart = Date.now();
     async function fetchAll() {
       try {
         const response = await fetch('/dashboard/recent_matches');
@@ -243,6 +245,9 @@ export function RecentMatches() {
         setMatchHistory(Object.fromEntries(historyEntries));
       } catch (error) {
         console.error('Failed to load recent matches:', error);
+      } finally {
+        const elapsed = Date.now() - fetchStart;
+        setTimeout(() => setLoading(false), Math.max(0, 650 - elapsed));
       }
     }
     fetchAll();
@@ -261,6 +266,13 @@ export function RecentMatches() {
         <h2 className="text-2xl font-bold tracking-wide">
           <span className="text-c9-cyan font-extrabold">Recent Matches</span>
         </h2>
+        {loading ? (
+          <div className="flex gap-2 flex-wrap justify-center animate-pulse">
+            {[...Array(4)].map((_, i) => (
+              <div key={i} className="h-7 w-36 bg-c9-cyan/20 rounded-lg" />
+            ))}
+          </div>
+        ) : (
         <div className="flex gap-2 flex-wrap justify-center">
           {matches.map((m, i) => (
             <button
@@ -278,9 +290,29 @@ export function RecentMatches() {
             </button>
           ))}
         </div>
+        )}
       </div>
 
-      {match && (
+      {loading ? (
+        <div className="animate-pulse space-y-4">
+          <div className="flex justify-center gap-16">
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-12 h-12 bg-gray-200 rounded-xl" />
+              <div className="h-4 w-20 bg-gray-200 rounded" />
+              <div className="h-10 w-10 bg-c9-cyan/20 rounded" />
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-12 h-12 bg-gray-200 rounded-xl" />
+              <div className="h-4 w-20 bg-gray-200 rounded" />
+              <div className="h-10 w-10 bg-gray-200 rounded" />
+            </div>
+          </div>
+          <div className="flex gap-4">
+            <div className="flex-1 h-48 bg-gray-100 rounded-xl" />
+            <div className="flex-1 h-48 bg-gray-100 rounded-xl" />
+          </div>
+        </div>
+      ) : match && (
         <>
           {/* Tournament / phase / date */}
           <div className="text-center text-xs text-c9-muted mb-3 space-x-2">

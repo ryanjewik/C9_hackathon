@@ -24,8 +24,10 @@ function daysLeft(end: string | null) {
 
 export function OngoingTournaments() {
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const fetchStart = Date.now();
     async function fetchTournaments() {
       try {
         const response = await fetch('/dashboard/ongoing_tournaments');
@@ -34,6 +36,9 @@ export function OngoingTournaments() {
         setTournaments(Array.isArray(data) ? data : []);
       } catch (error) {
         console.error('Failed to load tournaments:', error);
+      } finally {
+        const elapsed = Date.now() - fetchStart;
+        setTimeout(() => setLoading(false), Math.max(0, 650 - elapsed));
       }
     }
     fetchTournaments();
@@ -45,7 +50,18 @@ export function OngoingTournaments() {
         <span className="text-c9-cyan font-extrabold">Ongoing Tournaments</span>
       </h2>
 
-      {tournaments.length === 0 ? (
+      {loading ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 animate-pulse">
+          {[...Array(4)].map((_, i) => (
+            <div key={i} className="rounded-xl border border-c9-cyan/30 bg-white/60 p-4 flex flex-col gap-3">
+              <div className="h-3 w-16 bg-c9-cyan/30 rounded-full" />
+              <div className="h-4 w-3/4 bg-gray-200 rounded" />
+              <div className="h-3 w-1/2 bg-gray-100 rounded" />
+              <div className="h-3 w-2/3 bg-gray-100 rounded" />
+            </div>
+          ))}
+        </div>
+      ) : tournaments.length === 0 ? (
         <p className="text-c9-muted text-sm text-center py-8">No ongoing tournaments</p>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

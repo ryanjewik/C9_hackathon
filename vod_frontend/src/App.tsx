@@ -1,12 +1,24 @@
 //import { Film } from 'lucide-react';
 import { User } from 'lucide-react';
+import { useRef } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import SkyBackground from './components/SkyBackground';
 import { TabProps, Tab } from './components/Tab';
 import {About} from './pages/About';
 import { Home } from './pages/Home';
 import { Vods } from './pages/Vods';
 import { ApiDocs } from './pages/ApiDocs';
-import { Routes, Route, useNavigate } from 'react-router-dom';
+import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
+
+const PAGE_ORDER = ['/', '/apidocs', '/vods', '/about'];
+
+const panVariants = {
+  enter:  (dir: number) => ({ x: dir >= 0 ? '100%' : '-100%', opacity: 0 }),
+  center: { x: 0, opacity: 1 },
+  exit:   (dir: number) => ({ x: dir >= 0 ? '-100%' : '100%', opacity: 0 }),
+};
+
+const panTransition = { duration: 0.6, ease: [0.4, 0, 0.2, 1] as const };
 
 function App() {
   const navData: TabProps[] = [
@@ -17,6 +29,14 @@ function App() {
   ];
 
   const navigate = useNavigate();
+  const location = useLocation();
+  const prevPathRef = useRef(location.pathname);
+
+  const prevIdx = PAGE_ORDER.indexOf(prevPathRef.current);
+  const currIdx = PAGE_ORDER.indexOf(location.pathname);
+  const direction = currIdx >= prevIdx ? 1 : -1;
+  prevPathRef.current = location.pathname;
+
   function accountBtn(){
     navigate("/account");
   }
@@ -53,12 +73,27 @@ function App() {
           </h1>
         </button>
       </nav>
-      <Routes>
-        <Route path="/" element={<Home />} />
-        <Route path="/about" element={<About />} />
-        <Route path="/vods" element={<Vods />} />
-        <Route path="/apidocs" element={<ApiDocs />} />
-      </Routes>
+      <div style={{ position: 'relative', overflow: 'hidden' }}>
+        <AnimatePresence mode="popLayout" custom={direction}>
+          <motion.div
+            key={location.pathname}
+            custom={direction}
+            variants={panVariants}
+            initial="enter"
+            animate="center"
+            exit="exit"
+            transition={panTransition}
+            style={{ willChange: 'transform' }}
+          >
+            <Routes location={location}>
+              <Route path="/" element={<Home />} />
+              <Route path="/about" element={<About />} />
+              <Route path="/vods" element={<Vods />} />
+              <Route path="/apidocs" element={<ApiDocs />} />
+            </Routes>
+          </motion.div>
+        </AnimatePresence>
+      </div>
 
       <main className="max-w-7xl mx-auto px-6 py-8">
         <></>

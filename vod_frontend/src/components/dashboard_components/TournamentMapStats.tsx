@@ -45,8 +45,10 @@ function CustomTooltip({ active, payload }: TooltipProps) {
 export function TournamentMapStats() {
   const [stats, setStats] = useState<TournamentMapStat[]>([]);
   const [selectedTournament, setSelectedTournament] = useState<string>('');
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const fetchStart = Date.now();
     async function fetchStats() {
       try {
         const response = await fetch('/dashboard/tournament_map_stats');
@@ -57,6 +59,9 @@ export function TournamentMapStats() {
         if (rows.length > 0) setSelectedTournament(rows[0].tournamentName);
       } catch (error) {
         console.error('Failed to load tournament map stats:', error);
+      } finally {
+        const elapsed = Date.now() - fetchStart;
+        setTimeout(() => setLoading(false), Math.max(0, 650 - elapsed));
       }
     }
     fetchStats();
@@ -85,18 +90,30 @@ export function TournamentMapStats() {
         <h2 className="text-2xl font-bold tracking-wide">
           <span className="text-c9-cyan font-extrabold">Map Pick Rates</span>
         </h2>
-        <select
-          value={selectedTournament}
-          onChange={(e) => setSelectedTournament(e.target.value)}
-          className="text-sm border border-c9-cyan rounded-lg px-2 py-1 bg-white text-c9-text focus:outline-none focus:ring-2 focus:ring-c9-cyan"
-        >
-          {tournaments.map((t) => (
-            <option key={t} value={t}>{t}</option>
-          ))}
-        </select>
+        {!loading && (
+          <select
+            value={selectedTournament}
+            onChange={(e) => setSelectedTournament(e.target.value)}
+            className="text-sm border border-c9-cyan rounded-lg px-2 py-1 bg-white text-c9-text focus:outline-none focus:ring-2 focus:ring-c9-cyan"
+          >
+            {tournaments.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        )}
       </div>
 
-      <ResponsiveContainer width="100%" height={320}>
+      {loading ? (
+        <div className="animate-pulse space-y-2">
+          {[...Array(6)].map((_, i) => (
+            <div key={i} className="flex items-center gap-3">
+              <div className="h-3 w-16 bg-gray-200 rounded flex-shrink-0" />
+              <div className="h-5 rounded" style={{ width: `${55 + i * 7}%`, backgroundColor: 'rgba(77,217,232,0.2)' }} />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <ResponsiveContainer width="100%" height={220}>
         <BarChart
           data={chartData}
           layout="vertical"
@@ -132,6 +149,7 @@ export function TournamentMapStats() {
           </Bar>
         </BarChart>
       </ResponsiveContainer>
+      )}
     </div>
   );
 }

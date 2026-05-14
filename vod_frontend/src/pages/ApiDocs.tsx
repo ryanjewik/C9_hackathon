@@ -114,7 +114,7 @@ function EndpointRow({ ep }: { ep: Endpoint }) {
   );
 }
 
-function EndpointGroup({ title, icon, endpoints }: { title: string; icon?: ReactNode; endpoints: Endpoint[] }) {
+function EndpointGroup({ title, description, icon, endpoints }: { title: string; description?: string; icon?: ReactNode; endpoints: Endpoint[] }) {
   const [open, setOpen] = useState(true);
   return (
     <div className="space-y-2">
@@ -126,6 +126,7 @@ function EndpointGroup({ title, icon, endpoints }: { title: string; icon?: React
         <h3 className="text-base font-bold text-c9-text">{title}</h3>
         {open ? <ChevronDown className="w-4 h-4 text-c9-muted ml-auto" /> : <ChevronRight className="w-4 h-4 text-c9-muted ml-auto" />}
       </button>
+      {description && <p className="text-sm text-c9-muted pl-1">{description}</p>}
       {open && (
         <div className="space-y-1.5 pl-1">
           {endpoints.map((ep) => <EndpointRow key={ep.method + ep.path} ep={ep} />)}
@@ -145,9 +146,10 @@ const paginationParams = [
 // All paginated responses wrap content in a Spring Page envelope:
 // { content: [...], totalElements: N, totalPages: N, number: 0, size: 20, first: true, last: false }
 
-const endpointGroups: { title: string; icon: ReactNode; endpoints: Endpoint[] }[] = [
+const endpointGroups: { title: string; description?: string; icon: ReactNode; endpoints: Endpoint[] }[] = [
   {
     title: 'Tournaments',
+    description: 'All recorded Valorant esports tournaments spanning VCT, Challengers, and Offseason Events.',
     icon: <Zap className="w-4 h-4 text-c9-cyan" />,
     endpoints: [
       {
@@ -157,18 +159,18 @@ const endpointGroups: { title: string; icon: ReactNode; endpoints: Endpoint[] }[
         responseExample: `{
   "content": [
     {
-      "id": 1,
-      "name": "VCT Americas 2026",
-      "tier": "S",
-      "startDate": "2026-01-15",
-      "endDate": "2026-04-30",
-      "location": "Los Angeles, CA",
-      "prizePool": "$250,000",
+      "id": 2283,
+      "name": "Valorant Champions 2025",
+      "tier": "VCT",
+      "start_date": "2025-09-12",
+      "end_date": "2025-10-05",
+      "location": "Accor Arena, Paris",
+      "prize_pool": "$2,250,000 USD",
       "status": "completed"
     }
   ],
-  "totalElements": 42,
-  "totalPages": 3,
+  "totalElements": 749,
+  "totalPages": 749,
   "number": 0,
   "size": 20
 }`,
@@ -178,13 +180,13 @@ const endpointGroups: { title: string; icon: ReactNode; endpoints: Endpoint[] }[
         description: 'Get a single tournament by ID.',
         params: [{ name: 'id', in: 'path', type: 'integer', required: true, description: 'Tournament ID' }],
         responseExample: `{
-  "id": 1,
-  "name": "VCT Americas 2026",
-  "tier": "S",
-  "startDate": "2026-01-15",
-  "endDate": "2026-04-30",
-  "location": "Los Angeles, CA",
-  "prizePool": "$250,000",
+  "id": 2283,
+  "name": "Valorant Champions 2025",
+  "tier": "VCT",
+  "start_date": "2025-09-12",
+  "end_date": "2025-10-05",
+  "location": "Accor Arena, Paris",
+  "prize_pool": "$2,250,000 USD",
   "status": "completed"
 }`,
       },
@@ -192,6 +194,7 @@ const endpointGroups: { title: string; icon: ReactNode; endpoints: Endpoint[] }[
   },
   {
     title: 'Matches',
+    description: 'Match records with scores, format, maps played, and links to per-map game scores and veto data.',
     icon: <Zap className="w-4 h-4 text-c9-cyan" />,
     endpoints: [
       {
@@ -201,29 +204,33 @@ const endpointGroups: { title: string; icon: ReactNode; endpoints: Endpoint[] }[
         responseExample: `{
   "content": [
     {
-      "id": 45,
-      "phase": "Playoffs",
-      "date": "2026-04-20T18:00:00Z",
-      "patch": "9.04",
-      "tournamentId": 1,
-      "tournamentName": "VCT Americas 2026",
-      "team1Name": "Cloud9",
-      "team1Id": 3,
+      "id": 582531,
+      "phase": "Main Event: Quarterfinals",
+      "date": "2025-11-12T04:00:00Z",
+      "patch": null,
+      "tournamentId": 2720,
+      "tournamentName": "China Evolution Series: Epilogue",
+      "team1Name": "Nova Esports",
+      "team1Id": 12064,
       "team1Score": 2,
-      "team2Name": "NRG Esports",
-      "team2Id": 7,
-      "team2Score": 0,
-      "winner": 3,
-      "format": "BO3",
-      "map1": "Abyss",
-      "map2": "Bind",
-      "map3": null,
+      "team2Name": "EDward Gaming",
+      "team2Id": 1120,
+      "team2Score": 1,
+      "winner": 12064,
+      "format": "bo3",
+      "map1": "Split",
+      "map2": "Sunset",
+      "map3": "Haven",
       "map4": null,
-      "map5": null
+      "map5": null,
+      "gameScoreIds": [240467, 240468, 240469],
+      "mapVetoIds": [1, 2, 3, 4, 5, 6]
     }
   ],
-  "totalElements": 310,
-  "totalPages": 16
+  "totalElements": 32395,
+  "totalPages": 32395,
+  "number": 0,
+  "size": 20
 }`,
       },
       {
@@ -231,97 +238,109 @@ const endpointGroups: { title: string; icon: ReactNode; endpoints: Endpoint[] }[
         description: 'Get a single match by ID.',
         params: [{ name: 'id', in: 'path', type: 'integer', required: true, description: 'Match ID' }],
         responseExample: `{
-  "id": 45,
-  "phase": "Playoffs",
-  "date": "2026-04-20T18:00:00Z",
-  "patch": "9.04",
-  "tournamentId": 1,
-  "tournamentName": "VCT Americas 2026",
-  "team1Name": "Cloud9",
-  "team1Id": 3,
+  "id": 582531,
+  "phase": "Main Event: Quarterfinals",
+  "date": "2025-11-12T04:00:00Z",
+  "patch": null,
+  "tournamentId": 2720,
+  "tournamentName": "China Evolution Series: Epilogue",
+  "team1Name": "Nova Esports",
+  "team1Id": 12064,
   "team1Score": 2,
-  "team2Name": "NRG Esports",
-  "team2Id": 7,
-  "team2Score": 0,
-  "winner": 3,
-  "format": "BO3",
-  "map1": "Abyss",
-  "map2": "Bind",
-  "map3": null,
+  "team2Name": "EDward Gaming",
+  "team2Id": 1120,
+  "team2Score": 1,
+  "winner": 12064,
+  "format": "bo3",
+  "map1": "Split",
+  "map2": "Sunset",
+  "map3": "Haven",
   "map4": null,
-  "map5": null
+  "map5": null,
+  "gameScoreIds": [240467, 240468, 240469],
+  "mapVetoIds": [1, 2, 3, 4, 5, 6]
 }`,
       },
     ],
   },
   {
     title: 'Players',
+    description: 'Player profiles with career-aggregate stats computed across all recorded maps.',
     icon: <Zap className="w-4 h-4 text-c9-cyan" />,
     endpoints: [
       {
         method: 'GET', path: '/api/players', auth: true,
-        description: 'Paginated list of all players with all-time and last-60-day stats.',
+        description: 'Paginated list of all players with all-time stats.',
         params: paginationParams,
         responseExample: `{
   "content": [
     {
-      "id": 7,
-      "nickname": "mwzera",
-      "firstName": "Leonardo",
-      "lastName": "Gonçalves",
-      "country": "Brazil",
-      "teamId": 5,
-      "titles": [1, 3],
-      "all_time_maps": 210,
-      "all_time_map_wins": 130,
-      "all_time_map_losses": 80,
-      "all_time_rating": 1.24,
-      "all_time_acs": 248,
-      "all_time_kills": 5320,
-      "all_time_deaths": 4010,
-      "all_time_assists": 980,
-      "all_time_avg_kills": 25.3,
-      "all_time_avg_deaths": 19.1,
-      "all_time_avg_assists": 4.7,
-      "all_time_kast": 73.4,
-      "all_time_adr": 158.2,
-      "all_time_hs_percent": 24.1,
-      "all_time_fk": 420,
-      "all_time_fd": 310,
-      "all_time_avg_fk": 2.0,
-      "all_time_avg_fd": 1.5,
-      "last_60_maps": 18,
-      "last_60_map_wins": 11,
-      "last_60_map_losses": 7,
-      "last_60_rating": 1.31,
-      "last_60_acs": 262,
-      "last_60_kills": 420,
-      "last_60_deaths": 310,
-      "last_60_assists": 85,
-      "last_60_avg_kills": 23.3,
-      "last_60_avg_deaths": 17.2,
-      "last_60_avg_assists": 4.7,
-      "last_60_kast": 76.2,
-      "last_60_adr": 162.5,
-      "last_60_hs_percent": 26.4,
-      "last_60_fk": 32,
-      "last_60_fd": 22,
-      "last_60_avg_fk": 1.8,
-      "last_60_avg_fd": 1.2
+      "id": 42,
+      "nickname": "KDS",
+      "country": "United States",
+      "team_id": 1281,
+      "titles": [],
+      "all_time_maps": 7,
+      "all_time_map_wins": 2,
+      "all_time_map_losses": 5,
+      "all_time_rating": 0.69,
+      "all_time_acs": 175.29,
+      "all_time_kills": 77,
+      "all_time_deaths": 112,
+      "all_time_assists": 24,
+      "all_time_avg_kills": 11.00,
+      "all_time_avg_deaths": 16.00,
+      "all_time_avg_assists": 3.43,
+      "all_time_kast": 61.57,
+      "all_time_adr": 117.86,
+      "all_time_hs_percent": 15.86,
+      "all_time_fk": 23,
+      "all_time_fd": 26,
+      "all_time_avg_fk": 3.29,
+      "all_time_avg_fd": 3.71
     }
   ],
-  "totalElements": 150
+  "totalElements": 29022,
+  "totalPages": 29022,
+  "number": 0,
+  "size": 20
 }`,
       },
       {
         method: 'GET', path: '/api/players/{id}', auth: true,
-        description: 'Get a single player by ID. Same shape as the list item above.',
+        description: 'Get a single player by ID.',
         params: [{ name: 'id', in: 'path', type: 'integer', required: true, description: 'Player ID' }],
+        responseExample: `{
+  "id": 42,
+  "nickname": "KDS",
+  "country": "United States",
+  "team_id": 1281,
+  "titles": [],
+  "all_time_maps": 7,
+  "all_time_map_wins": 2,
+  "all_time_map_losses": 5,
+  "all_time_rating": 0.69,
+  "all_time_acs": 175.29,
+  "all_time_kills": 77,
+  "all_time_deaths": 112,
+  "all_time_assists": 24,
+  "all_time_avg_kills": 11.00,
+  "all_time_avg_deaths": 16.00,
+  "all_time_avg_assists": 3.43,
+  "all_time_kast": 61.57,
+  "all_time_adr": 117.86,
+  "all_time_hs_percent": 15.86,
+  "all_time_fk": 23,
+  "all_time_fd": 26,
+  "all_time_avg_fk": 3.29,
+  "all_time_avg_fd": 3.71
+}`,
       },
     ],
   },
   {
     title: 'Teams',
+    description: 'Esports organizations with overall match win/loss records and roster history.',
     icon: <Zap className="w-4 h-4 text-c9-cyan" />,
     endpoints: [
       {
@@ -331,17 +350,19 @@ const endpointGroups: { title: string; icon: ReactNode; endpoints: Endpoint[] }[
         responseExample: `{
   "content": [
     {
-      "id": 3,
-      "name": "Cloud9",
-      "teamTag": "C9",
-      "location": "United States",
-      "titles": [2],
-      "matchWins": 45,
-      "matchLosses": 28,
-      "currentRosterId": 12
+      "id": 387,
+      "name": "QQQ Hasagi",
+      "teamTag": "QQQ",
+      "location": "Vietnam",
+      "titles": [],
+      "matchWins": 0,
+      "matchLosses": 0
     }
   ],
-  "totalElements": 30
+  "totalElements": 10586,
+  "totalPages": 10586,
+  "number": 0,
+  "size": 20
 }`,
       },
       {
@@ -349,20 +370,20 @@ const endpointGroups: { title: string; icon: ReactNode; endpoints: Endpoint[] }[
         description: 'Get a single team by ID.',
         params: [{ name: 'id', in: 'path', type: 'integer', required: true, description: 'Team ID' }],
         responseExample: `{
-  "id": 3,
-  "name": "Cloud9",
-  "teamTag": "C9",
-  "location": "United States",
-  "titles": [2],
-  "matchWins": 45,
-  "matchLosses": 28,
-  "currentRosterId": 12
+  "id": 387,
+  "name": "QQQ Hasagi",
+  "teamTag": "QQQ",
+  "location": "Vietnam",
+  "titles": [],
+  "matchWins": 0,
+  "matchLosses": 0
 }`,
       },
     ],
   },
   {
     title: 'Rosters',
+    description: 'Five-player roster snapshots tied to a team at a specific point in time, with map win/loss records.',
     icon: <Zap className="w-4 h-4 text-c9-cyan" />,
     endpoints: [
       {
@@ -372,35 +393,46 @@ const endpointGroups: { title: string; icon: ReactNode; endpoints: Endpoint[] }[
         responseExample: `{
   "content": [
     {
-      "id": 12,
-      "teamId": 3,
-      "player1": 14,
-      "player2": 22,
-      "player3": 7,
-      "player4": 19,
-      "player5": 31,
-      "dateCreated": "2025-11-01",
-      "mapWins": 58,
-      "mapLosses": 34,
-      "teamEntity": { "id": 3, "name": "Cloud9", ... },
-      "player1Entity": { "id": 14, "nickname": "Zellsis", ... },
-      "player2Entity": { ... },
-      "player3Entity": { ... },
-      "player4Entity": { ... },
-      "player5Entity": { ... }
+      "id": 2,
+      "dateCreated": "2025-11-12",
+      "mapWins": 1,
+      "mapLosses": 2,
+      "team": { "id": 1120, "name": "EDward Gaming", "teamTag": "EDG" },
+      "player1": { "id": 34180, "nickname": "P1n" },
+      "player2": { "id": 56277, "nickname": "AnJing" },
+      "player3": { "id": 59796, "nickname": "YoungX" },
+      "player4": { "id": 59797, "nickname": "Moonlight" },
+      "player5": { "id": 59798, "nickname": "ggd" }
     }
-  ]
+  ],
+  "totalElements": 15508,
+  "totalPages": 15508,
+  "number": 0,
+  "size": 20
 }`,
       },
       {
         method: 'GET', path: '/api/rosters/{id}', auth: true,
         description: 'Get a roster by ID.',
         params: [{ name: 'id', in: 'path', type: 'integer', required: true, description: 'Roster ID' }],
+        responseExample: `{
+  "id": 2,
+  "dateCreated": "2025-11-12",
+  "mapWins": 1,
+  "mapLosses": 2,
+  "team": { "id": 1120, "name": "EDward Gaming", "teamTag": "EDG" },
+  "player1": { "id": 34180, "nickname": "P1n" },
+  "player2": { "id": 56277, "nickname": "AnJing" },
+  "player3": { "id": 59796, "nickname": "YoungX" },
+  "player4": { "id": 59797, "nickname": "Moonlight" },
+  "player5": { "id": 59798, "nickname": "ggd" }
+}`,
       },
     ],
   },
   {
     title: 'Player Games',
+    description: 'Per-player, per-map performance records: ACS, K/D/A, ADR, headshot %, first kills/deaths, and more.',
     icon: <Zap className="w-4 h-4 text-c9-cyan" />,
     endpoints: [
       {
@@ -410,38 +442,64 @@ const endpointGroups: { title: string; icon: ReactNode; endpoints: Endpoint[] }[
         responseExample: `{
   "content": [
     {
-      "id": 1001,
-      "matchId": 45,
-      "gameId": 201,
-      "playerId": 7,
-      "teamId": 3,
-      "rosterId": 12,
-      "tournamentId": 1,
-      "map": "Abyss",
-      "agent": "Jett",
-      "rating": 1.41,
-      "acs": 310,
-      "kills": 28,
-      "deaths": 17,
-      "assists": 5,
-      "kast": "78%",
-      "adr": 182,
-      "hsPercent": "31%",
-      "fk": 4,
-      "fd": 2
+      "id": 1,
+      "matchId": 582531,
+      "gameId": 240467,
+      "teamId": 12064,
+      "rosterId": 1,
+      "tournamentId": 2720,
+      "map": "Split",
+      "agent": "skye",
+      "rating": null,
+      "acs": 290,
+      "kills": 17,
+      "deaths": 9,
+      "assists": 11,
+      "kast": null,
+      "adr": null,
+      "hsPercent": null,
+      "fk": null,
+      "fd": null,
+      "player": { "id": 4712, "nickname": "heybay" }
     }
-  ]
+  ],
+  "totalElements": 606545,
+  "totalPages": 606545,
+  "number": 0,
+  "size": 20
 }`,
       },
       {
         method: 'GET', path: '/api/player-games/{id}', auth: true,
         description: 'Get a single player game record.',
         params: [{ name: 'id', in: 'path', type: 'integer', required: true, description: 'Player game ID' }],
+        responseExample: `{
+  "id": 1,
+  "matchId": 582531,
+  "gameId": 240467,
+  "teamId": 12064,
+  "rosterId": 1,
+  "tournamentId": 2720,
+  "map": "Split",
+  "agent": "skye",
+  "rating": null,
+  "acs": 290,
+  "kills": 17,
+  "deaths": 9,
+  "assists": 11,
+  "kast": null,
+  "adr": null,
+  "hsPercent": null,
+  "fk": null,
+  "fd": null,
+  "player": { "id": 4712, "nickname": "heybay" }
+}`,
       },
     ],
   },
   {
     title: 'Game Scores',
+    description: 'Per-map round scores for each match, linking back to all player game records for that map.',
     icon: <Zap className="w-4 h-4 text-c9-cyan" />,
     endpoints: [
       {
@@ -451,29 +509,48 @@ const endpointGroups: { title: string; icon: ReactNode; endpoints: Endpoint[] }[
         responseExample: `{
   "content": [
     {
-      "id": 201,
-      "matchId": 45,
+      "id": 240467,
+      "matchId": 582531,
       "team1Score": 13,
-      "team2Score": 9,
-      "team1Id": 3,
-      "team2Id": 7,
-      "team1Name": "Cloud9",
-      "team2Name": "NRG Esports",
-      "map": "Abyss",
-      "winner": 3
+      "team2Score": 3,
+      "team1Id": 12064,
+      "team2Id": 1120,
+      "team1Name": "Nova Esports",
+      "team2Name": "EDward Gaming",
+      "map": "Split",
+      "winner": 12064,
+      "playerGameIds": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     }
-  ]
+  ],
+  "totalElements": 61013,
+  "totalPages": 61013,
+  "number": 0,
+  "size": 20
 }`,
       },
       {
         method: 'GET', path: '/api/game-scores/{id}', auth: true,
         description: 'Get a single game score record.',
         params: [{ name: 'id', in: 'path', type: 'integer', required: true, description: 'Game score ID' }],
+        responseExample: `{
+  "id": 240467,
+  "matchId": 582531,
+  "team1Score": 13,
+  "team2Score": 3,
+  "team1Id": 12064,
+  "team2Id": 1120,
+  "team1Name": "Nova Esports",
+  "team2Name": "EDward Gaming",
+  "map": "Split",
+  "winner": 12064,
+  "playerGameIds": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+}`,
       },
     ],
   },
   {
     title: 'Map Veto',
+    description: 'Ordered ban, pick, and decider actions for each match\'s map selection phase.',
     icon: <Zap className="w-4 h-4 text-c9-cyan" />,
     endpoints: [
       {
@@ -483,16 +560,23 @@ const endpointGroups: { title: string; icon: ReactNode; endpoints: Endpoint[] }[
         responseExample: `{
   "content": [
     {
-      "id": 301,
-      "matchId": 45,
+      "id": 1,
       "type": "ban",
-      "teamId": 3,
-      "mapSelected": "Haven",
+      "mapSelected": "Bind",
       "turn": 1,
-      "teamEntity": { "id": 3, "name": "Cloud9", ... },
-      "matchEntity": { "id": 45, "phase": "Playoffs", ... }
+      "match": {
+        "team1Id": 12064,
+        "team1Name": "Nova Esports",
+        "team2Id": 1120,
+        "team2Name": "EDward Gaming"
+      },
+      "team": { "id": 12064, "name": "Nova Esports", "teamTag": "NOVA" }
     }
-  ]
+  ],
+  "totalElements": 62001,
+  "totalPages": 62001,
+  "number": 0,
+  "size": 20
 }`,
         notes: 'type is one of: "ban", "pick", "decider"',
       },
@@ -500,11 +584,25 @@ const endpointGroups: { title: string; icon: ReactNode; endpoints: Endpoint[] }[
         method: 'GET', path: '/api/map-veto/{id}', auth: true,
         description: 'Get a single map veto record.',
         params: [{ name: 'id', in: 'path', type: 'integer', required: true, description: 'Map veto ID' }],
+        responseExample: `{
+  "id": 1,
+  "type": "ban",
+  "mapSelected": "Bind",
+  "turn": 1,
+  "match": {
+    "team1Id": 12064,
+    "team1Name": "Nova Esports",
+    "team2Id": 1120,
+    "team2Name": "EDward Gaming"
+  },
+  "team": { "id": 12064, "name": "Nova Esports", "teamTag": "NOVA" }
+}`,
       },
     ],
   },
   {
     title: 'Tournament Placements',
+    description: 'Final standings and prize money allocations for each team in each tournament.',
     icon: <Zap className="w-4 h-4 text-c9-cyan" />,
     endpoints: [
       {
@@ -514,75 +612,34 @@ const endpointGroups: { title: string; icon: ReactNode; endpoints: Endpoint[] }[
         responseExample: `{
   "content": [
     {
-      "id": 401,
-      "tournamentId": 1,
-      "placement": "1st",
-      "esportsTeamId": 3,
-      "prizeMoney": "$100,000",
-      "stage": "Grand Final",
-      "players": [14, 22, 7, 19, 31],
-      "teamEntity": { "id": 3, "name": "Cloud9", ... },
-      "tournamentEntity": { "id": 1, "name": "VCT Americas 2026", ... }
+      "id": 1,
+      "placement": "1",
+      "players": null,
+      "prizeMoney": null,
+      "stage": "main-event",
+      "team": { "id": 11328, "name": "FunPlus Phoenix", "teamTag": "FPX" },
+      "tournament": { "id": 2720, "name": "China Evolution Series: Epilogue" }
     }
-  ]
+  ],
+  "totalElements": 11280,
+  "totalPages": 11280,
+  "number": 0,
+  "size": 20
 }`,
       },
       {
         method: 'GET', path: '/api/tournament-placements/{id}', auth: true,
         description: 'Get a single tournament placement.',
         params: [{ name: 'id', in: 'path', type: 'integer', required: true, description: 'Placement ID' }],
-      },
-    ],
-  },
-  {
-    title: 'Public Dashboard',
-    icon: <Globe className="w-4 h-4 text-emerald-500" />,
-    endpoints: [
-      {
-        method: 'GET', path: '/dashboard/ongoing_tournaments', auth: false,
-        description: 'List all currently active tournaments.',
-        responseExample: `[
-  {
-    "id": 1,
-    "name": "VCT Americas 2026",
-    "tier": "S",
-    "startDate": "2026-01-15",
-    "endDate": "2026-04-30",
-    "location": "Los Angeles, CA",
-    "status": "ongoing"
-  }
-]`,
-      },
-      {
-        method: 'GET', path: '/dashboard/recent_matches', auth: false,
-        description: 'List recent match results.',
-      },
-      {
-        method: 'GET', path: '/dashboard/map_stats', auth: false,
-        description: 'Map win/loss statistics for a specific team.',
-        params: [{ name: 'teamId', in: 'query', type: 'integer', required: true, description: 'Team to query stats for' }],
-      },
-      {
-        method: 'GET', path: '/dashboard/team_match_history', auth: false,
-        description: 'Recent match history for a specific team.',
-        params: [{ name: 'teamId', in: 'query', type: 'integer', required: true, description: 'Team to query history for' }],
-      },
-      {
-        method: 'GET', path: '/dashboard/player_stats', auth: false,
-        description: 'Top or bottom player performance stats.',
-        params: [{ name: 'sort', in: 'query', type: '"top" | "bottom"', required: false, description: 'Sort direction — defaults to "top"' }],
-      },
-      {
-        method: 'GET', path: '/dashboard/agent_stats', auth: false,
-        description: 'Best performing player per agent.',
-      },
-      {
-        method: 'GET', path: '/dashboard/agent_pickrates', auth: false,
-        description: 'Pick rate statistics per agent across all matches.',
-      },
-      {
-        method: 'GET', path: '/dashboard/tournament_map_stats', auth: false,
-        description: 'Map pick and ban statistics aggregated across tournaments.',
+        responseExample: `{
+  "id": 1,
+  "placement": "1",
+  "players": null,
+  "prizeMoney": null,
+  "stage": "main-event",
+  "team": { "id": 11328, "name": "FunPlus Phoenix", "teamTag": "FPX" },
+  "tournament": { "id": 2720, "name": "China Evolution Series: Epilogue" }
+}`,
       },
     ],
   },
@@ -681,7 +738,7 @@ Authorization: Bearer eyJhbGci...`}</Code>
         <SectionHeader>Endpoint Reference</SectionHeader>
         <div className="space-y-6">
           {endpointGroups.map((g) => (
-            <EndpointGroup key={g.title} title={g.title} icon={g.icon} endpoints={g.endpoints} />
+            <EndpointGroup key={g.title} title={g.title} description={g.description} icon={g.icon} endpoints={g.endpoints} />
           ))}
         </div>
       </Card>

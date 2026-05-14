@@ -117,8 +117,10 @@ function CustomTooltip({ active, payload }: TooltipProps) {
 export function AgentPickRates() {
   const [stats, setStats] = useState<AgentPickRate[]>([]);
   const [selectedTournament, setSelectedTournament] = useState<string>('');
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const fetchStart = Date.now();
     async function fetchStats() {
       try {
         const response = await fetch('/dashboard/agent_pickrates');
@@ -129,6 +131,9 @@ export function AgentPickRates() {
         if (rows.length > 0) setSelectedTournament(rows[0].tournamentName);
       } catch (error) {
         console.error('Failed to load agent pick rates:', error);
+      } finally {
+        const elapsed = Date.now() - fetchStart;
+        setTimeout(() => setLoading(false), Math.max(0, 650 - elapsed));
       }
     }
     fetchStats();
@@ -153,18 +158,26 @@ export function AgentPickRates() {
         <h2 className="text-2xl font-bold tracking-wide">
           <span className="text-c9-cyan font-extrabold">Agent Pick Rates</span>
         </h2>
-        <select
-          value={selectedTournament}
-          onChange={(e) => setSelectedTournament(e.target.value)}
-          className="text-sm border border-c9-cyan rounded-lg px-2 py-1 bg-white text-c9-text focus:outline-none focus:ring-2 focus:ring-c9-cyan"
-        >
-          {tournaments.map((t) => (
-            <option key={t} value={t}>{t}</option>
-          ))}
-        </select>
+        {!loading && (
+          <select
+            value={selectedTournament}
+            onChange={(e) => setSelectedTournament(e.target.value)}
+            className="text-sm border border-c9-cyan rounded-lg px-2 py-1 bg-white text-c9-text focus:outline-none focus:ring-2 focus:ring-c9-cyan"
+          >
+            {tournaments.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        )}
       </div>
 
-      <ResponsiveContainer width="100%" height={280}>
+      {loading ? (
+        <div className="flex items-center justify-center animate-pulse" style={{ height: 280 }}>
+          <div className="w-32 h-32 rounded-full border-8 border-c9-cyan/20" />
+        </div>
+      ) : (
+        <>
+        <ResponsiveContainer width="100%" height={280}>
         <PieChart margin={{ top: 10, right: 65, bottom: 10, left: 65 }}>
           <Pie
             data={pieData}
@@ -209,6 +222,8 @@ export function AgentPickRates() {
           </div>
         ))}
       </div>
+      </>
+      )}
     </div>
   );
 }

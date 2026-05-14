@@ -5,8 +5,8 @@ WORKDIR /app
 # Copy package files
 COPY package.json package-lock.json ./
 
-# Install dependencies using mirror to avoid network timeouts
-RUN npm ci --registry https://registry.npmmirror.com
+# Install dependencies
+RUN npm ci
 
 # Copy source code
 COPY . .

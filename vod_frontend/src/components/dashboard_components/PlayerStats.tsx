@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 function AgentIcon({ agent, size = 22 }: { agent: string; size?: number }) {
   const src = `/agents/${agent.toLowerCase().trim()}.webp`;
@@ -45,8 +45,12 @@ export function PlayerStats() {
   const [sort, setSort] = useState<Sort>('top');
   const [players, setPlayers] = useState<PlayerStat[]>([]);
   const [agentStats, setAgentStats] = useState<AgentStat[]>([]);
+  const [loading, setLoading] = useState(true);
+  const initialLoadRef = useRef(true);
+  const fetchStartRef = useRef(Date.now());
 
   useEffect(() => {
+    fetchStartRef.current = Date.now();
     async function fetchPlayerStats() {
       try {
         const response = await fetch(`/dashboard/player_stats?sort=${sort}`);
@@ -56,6 +60,14 @@ export function PlayerStats() {
         setPlayers(Array.isArray(data) ? data : []);
       } catch (error) {
         console.error("Failed to load player stats: ", error);
+      } finally {
+        if (initialLoadRef.current) {
+          initialLoadRef.current = false;
+          const elapsed = Date.now() - fetchStartRef.current;
+          setTimeout(() => setLoading(false), Math.max(0, 650 - elapsed));
+        } else {
+          setLoading(false);
+        }
       }
     }
     fetchPlayerStats();
@@ -122,6 +134,18 @@ export function PlayerStats() {
       </p>
 
       <div className="pb-4 pr-1">
+        {loading ? (
+          <div className="animate-pulse">
+            <div className="flex gap-4 border-b-2 border-c9-cyan/30 pb-2 mb-1">
+              {[...Array(8)].map((_, i) => <div key={i} className="h-3 bg-c9-cyan/20 rounded flex-1" />)}
+            </div>
+            {[...Array(10)].map((_, i) => (
+              <div key={i} className="flex gap-4 py-2 border-b border-c9-cyan/10">
+                {[...Array(8)].map((__, j) => <div key={j} className="h-3 bg-gray-100 rounded flex-1" />)}
+              </div>
+            ))}
+          </div>
+        ) : (
           <table className="w-full text-sm text-left border-collapse">
             <thead>
               <tr className="border-b-2 border-c9-cyan text-c9-cyan text-xs uppercase tracking-wider">
@@ -185,6 +209,7 @@ export function PlayerStats() {
               }
             </tbody>
           </table>
+        )}
         </div>
     </div>
   );
