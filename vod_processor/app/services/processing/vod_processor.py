@@ -387,6 +387,26 @@ class VODProcessor:
                         # Halftime ended - notify killfeed detector to resume
                         killfeed_detector.end_halftime_early(timestamp_ms)
                 top_hud_detector.add_halftime_listener(on_halftime_change)
+
+            # ── Minimap position tracker ───────────────────────────────────
+            _minimap_tracker = None
+            _minimap_roi_px  = None
+            _minimap_sample_interval = max(1, int(fps * 2.0))  # sample every ~2 s
+            _minimap_last_sampled_idx = -_minimap_sample_interval
+            if self._left_player_pool and self._right_player_pool:
+                try:
+                    from app.services.processing.minimap_tracker import MinimapTracker
+                    _minimap_tracker = MinimapTracker(
+                        left_players=self._left_player_pool,
+                        right_players=self._right_player_pool,
+                        left_color="teal",
+                        right_color="red",
+                        agents_dir="/app/crops_unlabeled",
+                    )
+                    print(f"[{job_id}] MinimapTracker initialized (sample every ~2 s)")
+                except Exception as _mm_err:
+                    print(f"[{job_id}] WARNING: MinimapTracker init failed: {_mm_err}")
+            _minimap_current_round = 1
             
             # Pre-compute ROI pixel coordinates (normal + TEAM COMMS)
             roi_px_normal = {
@@ -397,6 +417,7 @@ class VODProcessor:
             for name, roi_norm in TEAM_COMMS_ROI_OVERRIDES.items():
                 roi_px_tc[name] = roi_to_px(frame_width, frame_height, roi_norm)
             roi_px_cache = roi_px_normal  # default to normal
+            _minimap_roi_px = roi_px_normal.get("minimap")  # cache for tracker
             
             # Team comms detection state (with hysteresis to avoid flicker)
             team_comms_roi_px = roi_px_normal.get("team_comms")
@@ -583,8 +604,37 @@ class VODProcessor:
                                 # Delay halftime pause to capture end-of-round-12 kills
                                 HALFTIME_DELAY_MS = 5000
                                 d.set_halftime_start(t_ms + HALFTIME_DELAY_MS)
-                
+
+                        # Reset minimap tracker for the new round
+                        if _minimap_tracker is not None:
+                            _minimap_current_round = round_num + 1
+                            _minimap_tracker.reset_round(_minimap_current_round)
+
                 all_events.extend(frame_events)
+
+                # ── Minimap position tracking (every ~2 s of gameplay) ─────
+                if (_minimap_tracker is not None
+                        and _minimap_roi_px is not None
+                        and match_started
+                        and (frame_idx - _minimap_last_sampled_idx) >= _minimap_sample_interval):
+                    _minimap_last_sampled_idx = frame_idx
+                    try:
+                        _mm_roi = roi_px_cache.get("minimap") or _minimap_roi_px
+                        mm_crop = crop(frame, _mm_roi)
+                        if mm_crop.size > 0:
+                            mm_events = _minimap_tracker.update(
+                                mm_crop, t_ms, _minimap_current_round
+                            )
+                            for mm_ev in mm_events:
+                                all_events.append(Event(
+                                    t_ms=t_ms,
+                                    type="POSITION_UPDATE",
+                                    roi="minimap",
+                                    payload=mm_ev,
+                                    confidence=0.8,
+                                ))
+                    except Exception as _mm_upd_err:
+                        pass  # never let minimap errors halt processing
 
                 # Periodically update job progress so frontend can show a progress bar
                 try:
@@ -695,7 +745,58 @@ class VODProcessor:
             for d in detectors:
                 if hasattr(d, '_replay_removed_kills'):
                     replay_removed.extend(d._replay_removed_kills)
-            
+
+            # ── Minimap: resolve player identities via kill events ─────────
+            if _minimap_tracker is not None:
+                try:
+                    kill_events_for_mm = [e for e in all_events if e.type == "KILL_EVENT"]
+                    mm_kill_payloads = []
+                    for ev in kill_events_for_mm:
+                        kc = ev.payload.get("killer_team", "")
+                        vc = ev.payload.get("victim_team", "")
+                        # Map killfeed colour ("teal"/"red") → tracker side ("left"/"right")
+                        def _colour_to_side(c):
+                            if c == _minimap_tracker.left_color:
+                                return "left"
+                            if c == _minimap_tracker.right_color:
+                                return "right"
+                            return c
+                        mm_kill_payloads.append({
+                            "t_ms":         ev.t_ms,
+                            "killer_name":  ev.payload.get("killer_name", ""),
+                            "victim_name":  ev.payload.get("victim_name", ""),
+                            "killer_team":  _colour_to_side(kc),
+                            "victim_team":  _colour_to_side(vc),
+                        })
+                    _minimap_tracker.resolve_round_identities(mm_kill_payloads)
+
+                    # Attach last-known position to each kill event
+                    pos_patched = 0
+                    for ev in all_events:
+                        if ev.type != "KILL_EVENT":
+                            continue
+                        kp = _minimap_tracker.get_last_position(
+                            ev.payload.get("killer_name", "")
+                        )
+                        vp = _minimap_tracker.get_last_position(
+                            ev.payload.get("victim_name", "")
+                        )
+                        if kp:
+                            ev.payload["killer_pos"] = {
+                                "x": kp[0], "y": kp[1], "t_ms": kp[2]
+                            }
+                            pos_patched += 1
+                        if vp:
+                            ev.payload["victim_pos"] = {
+                                "x": vp[0], "y": vp[1], "t_ms": vp[2]
+                            }
+                            pos_patched += 1
+                    if pos_patched:
+                        print(f"[{job_id}] Minimap: attached {pos_patched} position annotations "
+                              f"to kill events")
+                except Exception as _mm_res_err:
+                    print(f"[{job_id}] WARNING: Minimap identity resolution failed: {_mm_res_err}")
+
             # Build timeline
             timeline = self._build_timeline(
                 job_id=job_id,
@@ -3446,6 +3547,23 @@ class KillfeedDetector(BaseDetector):
                   f"crop position-rejected (removed {removed} pending events)")
             return
 
+        # Save full killfeed row when icon extraction returned None (not position-rejected).
+        # Helps diagnose why some kills produce no crop.
+        if icon_img is None and self._crop_output_dir:
+            try:
+                no_crop_dir = os.path.join(self._crop_output_dir, "diag_no_crop")
+                os.makedirs(no_crop_dir, exist_ok=True)
+                reason = getattr(self, '_last_crop_fail_reason', 'unknown')
+                nc_name = (
+                    f"nocrop_t{int(t_ms)}ms"
+                    f"_{pc['killer_name'].replace(' ','_')}"
+                    f"_vs_{pc['victim_name'].replace(' ','_')}"
+                    f"__{reason}.png"
+                )
+                cv2.imwrite(os.path.join(no_crop_dir, nc_name), row_img)
+            except Exception:
+                pass
+
         # Try to extract ult badge from the gap to the right of the weapon icon
         ult_badge_img = None
         if icon_img is not None:
@@ -4456,6 +4574,7 @@ class KillfeedDetector(BaseDetector):
         try:
             h, w = row_img.shape[:2]
             if w < 60 or h < 10:
+                self._last_crop_fail_reason = "row_too_small"
                 return None
 
             # Track actual crop bounds for diagnostic overlay
@@ -4463,6 +4582,7 @@ class KillfeedDetector(BaseDetector):
             self._last_search_zone = None
             self._last_crop_method = None
             self._last_crop_position_rejected = False
+            self._last_crop_fail_reason = "no_icon_found"
 
             MIN_CROP_W = max(38, h)  # minimum crop width = row height or 38px
             crop_num = getattr(self, '_crop_counter', 0)
@@ -4485,6 +4605,7 @@ class KillfeedDetector(BaseDetector):
                 if left_bound < w * 0.30:
                     print(f"[CROP-DBG] crop#{crop_num} SKIP: kR={left_bound} < {w*0.30:.0f} (position too far left)")
                     self._last_crop_position_rejected = True
+                    self._last_crop_fail_reason = "position_rejected"
                     return None
 
                 # ── Ability icon detection ──
