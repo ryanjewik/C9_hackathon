@@ -809,12 +809,28 @@ class MinimapTracker:
             return dets
 
         left_dets  = _dets_from_blobs(left_blobs,  "L")
+
+        # ── Cross-team blob decontamination ───────────────────────────────────
+        # A face-portrait's skin tones can trigger the opposite team's colour
+        # mask (e.g. Breach's orange face → red mask).  Drop any right-team blob
+        # whose centre is within 8 px of a left-team blob centre, and vice-versa.
+        _CONTAM_R2 = (8.0 / w) ** 2   # normalised-space threshold
+        def _filter_blobs(src_blobs, ref_blobs):
+            filtered = []
+            for b in src_blobs:
+                bcx, bcy = b[0], b[1]
+                if any((bcx - r[0]) ** 2 + (bcy - r[1]) ** 2 < _CONTAM_R2
+                       for r in ref_blobs):
+                    continue
+                filtered.append(b)
+            return filtered
+        right_blobs = _filter_blobs(right_blobs, left_blobs)
+        left_blobs  = _filter_blobs(left_blobs,  right_blobs)
+
         right_dets = _dets_from_blobs(right_blobs, "R")
 
         self._update_team_tracks(left_dets,  "left",  t_ms)
         self._update_team_tracks(right_dets, "right", t_ms)
-        # Revoke the lower-scoring copy when the same agent is claimed on both
-        # teams (impossible in Valorant — each agent is unique per match).
         self._deduplicate_agents_across_teams()
 
         # ── Spike blobs (always yellow) ───────────────────────────────────────
@@ -831,6 +847,8 @@ class MinimapTracker:
         # ── Build event ───────────────────────────────────────────────────────
         positions = []
         for track in self._tracks.values():
+            if not track.alive:
+                continue
             entry: dict = {
                 "track_id":   track.track_id,
                 "player":     track.player_name or f"unknown_{track.track_id}",
@@ -839,11 +857,8 @@ class MinimapTracker:
                 "team":       track.team,
                 "x_norm":     round(track.last_cx, 4),
                 "y_norm":     round(track.last_cy, 4),
-                "alive":      track.alive,
                 "has_spike":  track.has_spike,
             }
-            if not track.alive and track.death_ms is not None:
-                entry["death_ms"] = track.death_ms
             positions.append(entry)
 
         if not positions:
@@ -1396,26 +1411,36 @@ class MinimapTracker:
 
     def _deduplicate_agents_across_teams(self) -> None:
         """
-        Revoke the lower-scoring assignment when the same agent name appears
-        on both teams.  In Valorant each agent is unique per match so a
-        cross-team duplicate is always a misidentification.
+        Position-based ghost suppression: if an *unidentified* track
+        (agent_name is None) sits within ~17 px of any alive track on the
+        *opposite* team, it is almost certainly a false positive caused by the
+        opponent agent's face-portrait skin tones leaking into the detector
+        (e.g. Breach's warm-orange face pixels triggering the red-ring mask).
+        Mark such ghost tracks dead so they do not pollute the output.
+
+        Note: per-team agent uniqueness is already enforced inside
+        _update_team_tracks via claimed_agents, so no cross-team name dedup
+        is needed here (both teams can legitimately play the same agent).
         """
-        seen: Dict[str, "BlobTrack"] = {}
-        for track in self._tracks.values():
-            if not track.alive or track.agent_name is None:
-                continue
-            agent = track.agent_name
-            if agent in seen:
-                prev = seen[agent]
-                if track.agent_score > prev.agent_score:
-                    prev.agent_name  = None
-                    prev.agent_score = 0.0
-                    seen[agent] = track
-                else:
-                    track.agent_name  = None
-                    track.agent_score = 0.0
-            else:
-                seen[agent] = track
+        # ── Position-based ghost suppression ──────────────────────────────────
+        # Threshold is in *normalised* coordinate space (coords are in [0, 1]).
+        # 12 px on a ~450 px wide minimap  →  12/450 ≈ 0.0267  →  squared ≈ 0.00071.
+        # Use 0.0012 for a comfortable ≈17 px margin.
+        _GHOST_R2 = 0.0012
+        alive_tracks = [t for t in self._tracks.values() if t.alive]
+        for track in alive_tracks:
+            if track.agent_name is not None:
+                continue  # already identified — keep it
+            opposite = "right" if track.team == "left" else "left"
+            for other in alive_tracks:
+                if other.team != opposite:
+                    continue
+                dist2 = (track.last_cx - other.last_cx) ** 2 + \
+                        (track.last_cy - other.last_cy) ** 2
+                if dist2 < _GHOST_R2:
+                    # Unidentified track shadows an opponent — ghost, kill it.
+                    track.alive = False
+                    break
 
     def _assign_name(self, track: BlobTrack, player_name: str) -> None:
         """
