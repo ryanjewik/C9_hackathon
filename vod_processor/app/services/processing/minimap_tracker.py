@@ -102,6 +102,10 @@ class AgentTemplateMatcher:
                               #      compared.  The team-colour ring sits at r≈9-11 px
                               #      so setting r_mask=8 excludes it entirely, leaving
                               #      only the discriminating face pixels for NCC.
+    PORTRAIT_STD_MIN = 18.0  # mean per-channel std-dev of inner face pixels must
+                              # exceed this to proceed past portrait guard.
+                              # HIGH-quality crops (ncc≥0.85) probe: min=23.9;
+                              # background patches: min=11.1 → 6-pt safety margin.
     FACE_HEIGHT_FRAC = 1.0   # fraction of portrait height to use (1.0 = full portrait)
     MIN_CONFIDENCE   = 0.25   # NCC threshold; below → no match
     SEARCH_RADIUS    = 22     # px — search window half-size around blob centroid
@@ -327,9 +331,30 @@ class AgentTemplateMatcher:
         """
         if not self.ready:
             return None, 0.0, cx_px, cy_px, []
+
+        # ── Portrait-quality guard ───────────────────────────────────────────
+        # TM_CCOEFF_NORMED is numerically unstable when patch variance ≈ 0,
+        # but even a non-degenerate dark background gradient can produce
+        # spurious high NCC scores.  Real agent portrait icons are:
+        #   • Bright  : mean face-pixel luminance ≥ 45
+        #   • Varied  : max-min range across face pixels ≥ 80
+        # Dark map backgrounds / screen edges fail at least one of these.
+        # We check face-circle pixels only (ring pixels are mean-filled by
+        # _masked_patch and contribute zero discriminating power).
+        _cx_i = round(cx_px)
+        _cy_i = round(cy_px)
+        _center_patch = self._masked_patch(minimap_bgr, _cx_i, _cy_i)
+        _face_pix = _center_patch[~self._outside].astype(np.float32)  # (N, 3)
+        _face_std = float(np.mean(np.std(_face_pix, axis=0)))  # mean per-channel σ
+        if (float(np.mean(_face_pix)) < 45.0
+                or int(np.ptp(_face_pix)) < 80
+                or _face_std < self.PORTRAIT_STD_MIN):
+            return None, 0.0, cx_px, cy_px, [(a, 0.0) for a in self._templates]
+        # ─────────────────────────────────────────────────────────────────────
+
         sr     = search_r
-        cx_i   = round(cx_px)
-        cy_i   = round(cy_px)
+        cx_i   = _cx_i
+        cy_i   = _cy_i
         best_name:  Optional[str] = None
         best_score: float         = threshold - 1e-6
         best_dx: int = 0
@@ -339,6 +364,15 @@ class AgentTemplateMatcher:
         for dy in range(-sr, sr + 1):
             for dx in range(-sr, sr + 1):
                 patch = self._masked_patch(minimap_bgr, cx_i + dx, cy_i + dy)
+                # Per-position portrait guard: same dual check for every offset
+                # so NCC is never called on dark/flat positions within the
+                # search window.
+                _fp = patch[~self._outside].astype(np.float32)
+                _fp_std = float(np.mean(np.std(_fp, axis=0)))
+                if (float(np.mean(_fp)) < 45.0
+                        or int(np.ptp(_fp)) < 80
+                        or _fp_std < self.PORTRAIT_STD_MIN):
+                    continue
                 for agent, templs in self._templates.items():
                     for tmpl in templs:
                         score = float(
@@ -528,7 +562,57 @@ class MinimapTracker:
     MAX_CTR_TEAL_FRAC  = 0.40
 
     # ── Agent identification at confirmed blob positions ───────────────────────
-    FACE_CROP_NCC_THRESHOLD = 0.22  # NCC required to name an agent from its blob
+    FACE_CROP_NCC_THRESHOLD  = 0.50  # NCC required to name an agent from its blob
+    CROP_SAVE_NCC_THRESHOLD  = 0.70  # higher bar for saving harvest crops — filters
+                                     # terrain textures that pass the portrait guard
+                                     # but produce spuriously moderate NCC scores
+    CROP_SAVE_MIN_MARGIN     = 0.12  # best_score − 2nd_best_score must exceed this
+                                     # before a crop is saved.  Background textures
+                                     # match multiple agents similarly (gap ≈ 0.02–
+                                     # 0.08); genuine icons have one clear winner
+                                     # (gap ≈ 0.25–0.45).  Filters false positives
+                                     # that pass the NCC threshold by accident.
+    CROP_SAVE_MIN_RING_FRAC  = 0.08  # min fraction of ring pixels (r=8–11 in 24×24
+                                     # template space) that must be orange/red
+                                     # (H≤15 or H≥160, S>50, V>50) or teal/green
+                                     # (H=40–100, S>50, V>50) to save a crop.
+                                     # Real icons always ≥0.24; background patches
+                                     # (gray corners, blue-gray terrain) score
+                                     # 0.00–0.07.  Edge crops are exempt.
+    CROP_SAVE_MIN_FACE_STD   = 20.0  # min mean per-channel std-dev of face pixels
+                                     # in the raw 24×24 crop before saving.
+                                     # Gray-corner false positives score 18–21;
+                                     # real agent faces score ≥20 (Astra min=20).
+                                     # Separate from PORTRAIT_STD_MIN (detection).
+    CROP_SAVE_STRICT_RING_THRESH = 0.35  # combined gate: if ring_frac < this AND
+    CROP_SAVE_STRICT_FACE_STD    = 23.0  # face_std < this → reject.  Catches gray-
+                                         # corner FPs that slip through both single
+                                         # gates (e.g. rfrac≈0.33, fstd≈21).
+                                         # Astra safe (rfrac≥0.47); waylay safe
+                                         # (rfrac≈0.24 but fstd≥24).
+    CROP_SAVE_MAX_FACE_TEAL_FRAC = 0.80  # teal map elements score 0.91–1.00;
+                                         # real max: Vyse=0.65, Harbor=0.46.
+    CROP_SAVE_MAX_FACE_GRAY_FRAC = 0.80  # gray map corners score 0.95;
+                                         # real max: <0.60.
+    CROP_SAVE_MIN_FACE_HUE_STD   = 10.0  # solid-color map elements (purple door,
+                                         # brown panel, dark-red wall) have uniform
+                                         # hue → std<6.  Real faces (incl. Omen)
+                                         # score ≥14.  Threshold=10 is safe.
+    CROP_SAVE_DEAD_RING_RFRAC    = 0.20  # dead-ring gate: if ring_frac < this …
+    CROP_SAVE_DEAD_RING_RSAT     = 50.0  # … AND mean ring saturation < this,
+                                         # there is no real agent ring → reject.
+    # ── Additional face / ring gates (rounds 2–3) ─────────────────────────────
+    CROP_SAVE_MIN_FACE_V         = 78.0  # Gate 5: very dark face → map element.
+                                         # FP floor 73.7; TP min 87.7 → safe margin.
+    CROP_SAVE_DEAD_RING_RFRAC2   = 0.22  # Gate 6: tighter dead-ring pair (catches
+    CROP_SAVE_DEAD_RING_RSAT2    = 63.0  # FPs with rfrac=0.22, rsat=62).
+    CROP_SAVE_DEAD_RING_RFRAC3   = 0.30  # Gate 7: broader rfrac dead-ring (catches
+    CROP_SAVE_DEAD_RING_RSAT3    = 55.0  # FPs with rfrac=0.28, rsat=53).
+    CROP_SAVE_LOW_HUE_STD        = 12.0  # Gate 8: red face + barely-nonuniform hue
+    CROP_SAVE_LOW_HUE_FRED_MIN   = 0.45  # → map element.  FP: (10.7, 0.56).
+    CROP_SAVE_PURPLE_FRED_MIN    = 0.35  # Gate 9: dark purple+red face (ability icon).
+    CROP_SAVE_PURPLE_MIN         = 0.30  # FP: (fpurple=0.35, fred=0.43, fv=91.6).
+    CROP_SAVE_PURPLE_V_MAX       = 100.0
 
     # ── Ring sampling (used only for the blob-first path) ─────────────────────
     RING_SAMPLE_INNER   = 11     # px — inner edge of team-ring sampling annulus
@@ -687,22 +771,6 @@ class MinimapTracker:
         ]
 
         self._frame_count += 1
-        # Save crops from the full pre-cap blob list so we don't miss any
-        # potential player icons that were pushed out by the cap.
-        if self._crop_dump_dir and (self._frame_count - 1) % self._crop_save_stride == 0:
-            sep = self._crop_min_sep_px
-            for tag, blobs_all in (("L", left_blobs_all), ("R", right_blobs_all)):
-                for idx, (_, _, _area, _r, cx_px, cy_px) in enumerate(blobs_all):
-                    overlapping = any(
-                        (ox - cx_px) ** 2 + (oy - cy_px) ** 2 < sep * sep
-                        for ox, oy in all_blob_px
-                        if not (ox == cx_px and oy == cy_px)
-                    )
-                    if not overlapping:
-                        self._save_blob_crop(
-                            minimap_bgr, cx_px, cy_px, f"{tag}{idx}"
-                        )
-
         _img_h, _img_w = minimap_bgr.shape[:2]
 
         # Pre-compute spike mask and all blob positions once per frame so
@@ -802,6 +870,127 @@ class MinimapTracker:
                     cy_px = ref_cy
                     cx_n  = cx_px / _img_w
                     cy_n  = cy_px / _img_h
+                    # Save crop only when NCC confirms a valid agent identity
+                    # with high confidence AND clear discrimination:
+                    #   • score >= CROP_SAVE_NCC_THRESHOLD (0.70): absolute floor
+                    #   • score − 2nd_best >= CROP_SAVE_MIN_MARGIN (0.12): one agent
+                    #     must clearly win.  Background textures match all agents
+                    #     similarly (low margin) and are rejected by this gate even
+                    #     when the absolute score sneaks past the threshold.
+                    _2nd_score = all_scores[1][1] if len(all_scores) >= 2 else 0.0
+                    _margin    = score - _2nd_score
+                    if (agent is not None
+                            and score >= self.CROP_SAVE_NCC_THRESHOLD
+                            and _margin >= self.CROP_SAVE_MIN_MARGIN
+                            and self._crop_dump_dir
+                            and (self._frame_count - 1) % self._crop_save_stride == 0):
+                        # ── Ring team-colour gate ─────────────────────────────
+                        # The annulus r=8-11 from the crop centre must contain
+                        # ≥CROP_SAVE_MIN_RING_FRAC orange or teal/green pixels.
+                        # Background terrain always fails (≈0); real icons pass.
+                        # Crops at the minimap edge (ring off-screen) are exempt.
+                        _ts  = self._agent_matcher.TEMPLATE_SIZE    # 24
+                        _rf  = self._agent_matcher.FACE_MASK_RADIUS  # 8
+                        _hlf = _ts // 2
+                        _cxi, _cyi = round(cx_px), round(cy_px)
+                        _hmm, _wmm = minimap_bgr.shape[:2]
+                        _x1r = _cxi - _hlf;  _y1r = _cyi - _hlf
+                        if (_x1r >= 0 and _y1r >= 0
+                                and _x1r + _ts <= _wmm
+                                and _y1r + _ts <= _hmm):
+                            _raw_r    = minimap_bgr[_y1r:_y1r+_ts, _x1r:_x1r+_ts]
+                            _ys_r, _xs_r = np.mgrid[0:_ts, 0:_ts]
+                            _r2_r     = (_xs_r - _hlf)**2 + (_ys_r - _hlf)**2
+                            # Face std gate (before ring check)
+                            _face_px_r  = _raw_r[_r2_r <= _rf**2]
+                            _face_std_r = float(np.mean(
+                                np.std(_face_px_r.astype(np.float32), axis=0)
+                            ))
+                            # Face HSV — teal / gray / hue-uniformity gates
+                            _fhsv       = cv2.cvtColor(
+                                _face_px_r.reshape(1, -1, 3), cv2.COLOR_BGR2HSV
+                            )[0]
+                            _fH = _fhsv[:, 0].astype(np.int32)
+                            _fS = _fhsv[:, 1].astype(np.int32)
+                            _fV = _fhsv[:, 2].astype(np.int32)
+                            _face_teal_frac = float(
+                                ((_fH >= 40) & (_fH <= 100) & (_fS > 40)).sum()
+                            ) / len(_fH)
+                            _face_gray_frac = float((_fS < 30).sum()) / len(_fH)
+                            _fsat_mask  = _fS > 30
+                            _face_hue_std = (
+                                float(np.std(_fH[_fsat_mask]))
+                                if _fsat_mask.sum() > 5 else 0.0
+                            )
+                            _face_mean_v    = float(np.mean(_fV))
+                            _face_red_frac  = float(
+                                (((_fH <= 15) | (_fH >= 160)) & (_fS > 40)).sum()
+                            ) / len(_fH)
+                            _face_purple_frac = float(
+                                ((_fH >= 120) & (_fH <= 160) & (_fS > 40)).sum()
+                            ) / len(_fH)
+                            _ring_px  = _raw_r[(_r2_r > _rf**2) & (_r2_r <= 11**2)]
+                            _rhsv     = cv2.cvtColor(
+                                _ring_px.reshape(1, -1, 3), cv2.COLOR_BGR2HSV
+                            )[0]
+                            _Rh, _Rs, _Rv = _rhsv[:, 0], _rhsv[:, 1], _rhsv[:, 2]
+                            _ring_frac = float(
+                                (
+                                    ((_Rh <= 15) | (_Rh >= 160))
+                                    & (_Rs > 50) & (_Rv > 50)    # orange/red
+                                    | ((_Rh >= 40) & (_Rh <= 100))
+                                    & (_Rs > 50) & (_Rv > 50)    # teal/green
+                                ).sum()
+                            ) / len(_Rh)
+                            _rsat_mean = float(np.mean(_Rs))
+                            _ring_ok = (
+                                _ring_frac >= self.CROP_SAVE_MIN_RING_FRAC
+                                and _face_std_r >= self.CROP_SAVE_MIN_FACE_STD
+                                # combined gate: low-ring crops must be textured
+                                and (
+                                    _ring_frac >= self.CROP_SAVE_STRICT_RING_THRESH
+                                    or _face_std_r >= self.CROP_SAVE_STRICT_FACE_STD
+                                )
+                                # teal map elements (fteal=0.91–1.00)
+                                and _face_teal_frac <= self.CROP_SAVE_MAX_FACE_TEAL_FRAC
+                                # gray map corners (fgray=0.95)
+                                and _face_gray_frac <= self.CROP_SAVE_MAX_FACE_GRAY_FRAC
+                                # solid-color elements: hue is nearly uniform
+                                and _face_hue_std >= self.CROP_SAVE_MIN_FACE_HUE_STD
+                                # dead-ring: low ring fraction + desaturated ring
+                                and not (
+                                    _ring_frac < self.CROP_SAVE_DEAD_RING_RFRAC
+                                    and _rsat_mean < self.CROP_SAVE_DEAD_RING_RSAT
+                                )
+                                # Gate 5: very dark face → map element
+                                and _face_mean_v >= self.CROP_SAVE_MIN_FACE_V
+                                # Gate 6: tighter dead-ring pair
+                                and not (
+                                    _ring_frac < self.CROP_SAVE_DEAD_RING_RFRAC2
+                                    and _rsat_mean < self.CROP_SAVE_DEAD_RING_RSAT2
+                                )
+                                # Gate 7: broader rfrac dead-ring
+                                and not (
+                                    _ring_frac < self.CROP_SAVE_DEAD_RING_RFRAC3
+                                    and _rsat_mean < self.CROP_SAVE_DEAD_RING_RSAT3
+                                )
+                                # Gate 8: red face + barely-nonuniform hue
+                                and not (
+                                    _face_hue_std < self.CROP_SAVE_LOW_HUE_STD
+                                    and _face_red_frac > self.CROP_SAVE_LOW_HUE_FRED_MIN
+                                )
+                                # Gate 9: dark purple+red face (ability icon)
+                                and not (
+                                    _face_purple_frac > self.CROP_SAVE_PURPLE_MIN
+                                    and _face_red_frac > self.CROP_SAVE_PURPLE_FRED_MIN
+                                    and _face_mean_v < self.CROP_SAVE_PURPLE_V_MAX
+                                )
+                            )
+                        else:
+                            _ring_ok = True  # edge crop — ring off-screen, exempt
+                        if _ring_ok:
+                            self._save_blob_crop(minimap_bgr, cx_px, cy_px,
+                                                 f"{team_tag}{idx}_{agent}_ncc{score:.4f}_t{int(t_ms/1000)}s")
                 else:
                     all_scores = []
                     agent, score = None, 0.0
