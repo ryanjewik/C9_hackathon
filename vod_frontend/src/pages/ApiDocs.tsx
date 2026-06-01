@@ -654,7 +654,7 @@ export function ApiDocs() {
       {/* Hero */}
       <Card className="text-center">
         <h1 className="text-4xl font-extrabold text-c9-cyan mb-2 tracking-wide">API Reference</h1>
-        <p className="text-c9-muted text-lg">Cloud9 Valorant Esports Data Platform</p>
+        <p className="text-c9-muted text-lg">Valorant Esports Data Platform</p>
       </Card>
 
       {/* Auth legend */}
