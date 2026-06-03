@@ -126,6 +126,30 @@ public class TeamAdminController {
         return ResponseEntity.ok(teamAdminService.viewTeamMembers(teamId));
     }
 
+    /** Send an invitation by username or email to a specific team */
+    @PostMapping("/{teamId}/invite")
+    public ResponseEntity<?> inviteByUsernameOrEmail(
+            @PathVariable("teamId") UUID teamId,
+            @AuthenticationPrincipal Jwt jwt,
+            @RequestBody Map<String, String> body) {
+        if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
+        UUID sender;
+        try { sender = UUID.fromString(jwt.getSubject()); } catch (Exception ex) { return ResponseEntity.status(401).body(Map.of("error", "invalid_token_subject")); }
+        String usernameOrEmail = body.get("usernameOrEmail");
+        if (usernameOrEmail == null || usernameOrEmail.isBlank())
+            return ResponseEntity.status(400).body(Map.of("error", "user_not_found"));
+
+        TeamAdminService.InviteByUsernameResult result = teamAdminService.inviteByUsernameOrEmail(teamId, usernameOrEmail, sender);
+        return switch (result.code) {
+            case OK -> ResponseEntity.status(201).body(result.invitation);
+            case USER_NOT_FOUND -> ResponseEntity.status(404).body(Map.of("error", "user_not_found"));
+            case ALREADY_MEMBER -> ResponseEntity.status(409).body(Map.of("error", "already_member"));
+            case ALREADY_INVITED -> ResponseEntity.status(409).body(Map.of("error", "already_invited"));
+            case TEAM_NOT_FOUND -> ResponseEntity.status(404).body(Map.of("error", "team_not_found"));
+            case NOT_ALLOWED -> ResponseEntity.status(403).body(Map.of("error", "forbidden"));
+        };
+    }
+
     /** Send an invitation to a player to join a team */
     @PostMapping("/invite")
     public ResponseEntity<?> invite(@AuthenticationPrincipal Jwt jwt, @RequestBody InviteDto dto) {
@@ -299,6 +323,29 @@ public class TeamAdminController {
             return ResponseEntity.status(403).body(Map.of("error","not_authorized_or_not_found"));
         }
         return ResponseEntity.noContent().build();
+    }
+
+    /** Get basic info for a single team (name, owner, created_at). */
+    @GetMapping("/{teamId}")
+    public ResponseEntity<?> getTeamInfo(@PathVariable("teamId") UUID teamId,
+                                         @AuthenticationPrincipal Jwt jwt) {
+        if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
+        return teamAdminService.getTeamInfo(teamId)
+            .map(t -> ResponseEntity.ok((Object) Map.of(
+                "id", t.getId().toString(),
+                "name", t.getName(),
+                "ownerUserId", t.getOwnerUserId().toString(),
+                "createdAt", t.getCreatedAt().toString())))
+            .orElse(ResponseEntity.status(404).body(Map.of("error", "team_not_found")));
+    }
+
+    /** Get team members with resolved usernames. */
+    @GetMapping("/{teamId}/members/rich")
+    public ResponseEntity<?> getTeamMembersRich(@PathVariable("teamId") UUID teamId,
+                                                @AuthenticationPrincipal Jwt jwt) {
+        if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
+        log.info("Get rich team members: teamId={}", teamId);
+        return ResponseEntity.ok(teamAdminService.viewTeamMembersRich(teamId));
     }
 
 }

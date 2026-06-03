@@ -122,4 +122,55 @@ public class AuthService {
             throw new com.example.identity_service.exception.RegistrationFailedException();
         }
     }
+
+    /** Return current user profile info. */
+    public java.util.Map<String, Object> getMe(UUID userId) {
+        Optional<User> userOpt = loginRepository.findById(userId);
+        if (userOpt.isEmpty()) throw new com.example.identity_service.exception.NotFoundException("user_not_found");
+        User user = userOpt.get();
+        return java.util.Map.of(
+            "id", user.getId().toString(),
+            "username", user.getUsername(),
+            "email", user.getEmail(),
+            "createdAt", user.getCreatedAt().toString()
+        );
+    }
+
+    /** Update profile fields (username, email, password). Returns a fresh JWT. */
+    @org.springframework.transaction.annotation.Transactional
+    public String updateProfile(UUID userId, com.example.identity_service.dto.UpdateProfileDto dto) {
+        Optional<User> userOpt = loginRepository.findById(userId);
+        if (userOpt.isEmpty()) throw new com.example.identity_service.exception.NotFoundException("user_not_found");
+        User user = userOpt.get();
+
+        if (dto.getUsername() != null && !dto.getUsername().isBlank()
+                && !dto.getUsername().equals(user.getUsername())) {
+            if (loginRepository.findByUsername(dto.getUsername()).isPresent()) {
+                throw new com.example.identity_service.exception.ConflictException("username_taken");
+            }
+            user.setUsername(dto.getUsername());
+        }
+
+        if (dto.getEmail() != null && !dto.getEmail().isBlank()
+                && !dto.getEmail().equals(user.getEmail())) {
+            if (loginRepository.findByEmail(dto.getEmail()).isPresent()) {
+                throw new com.example.identity_service.exception.ConflictException("email_taken");
+            }
+            user.setEmail(dto.getEmail());
+        }
+
+        if (dto.getNewPassword() != null && !dto.getNewPassword().isBlank()) {
+            if (dto.getCurrentPassword() == null || dto.getCurrentPassword().isBlank()) {
+                throw new com.example.identity_service.exception.BadRequestException("current_password_required");
+            }
+            if (!passwordEncoder.matches(dto.getCurrentPassword(), user.getPasswordHash())) {
+                throw new com.example.identity_service.exception.UnauthorizedException("invalid_current_password");
+            }
+            user.setPasswordHash(passwordEncoder.encode(dto.getNewPassword()));
+        }
+
+        loginRepository.save(user);
+        log.info("Profile updated: userId={}", userId);
+        return jwtService.generateToken(user.getId(), user.getUsername());
+    }
 }

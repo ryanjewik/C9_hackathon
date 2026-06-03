@@ -8,6 +8,7 @@ import java.util.UUID;
 public interface InvitationRepository extends JpaRepository<Invitation, UUID> {
     List<Invitation> findAllByReceivingPlayer(UUID receivingPlayer);
     List<Invitation> findAllBySendingTeam(UUID sendingTeam);
+    boolean existsBySendingTeamAndReceivingPlayer(UUID sendingTeam, UUID receivingPlayer);
     void deleteAllByReceivingPlayer(UUID receivingPlayer);
     void deleteAllBySendingAdmin(UUID sendingAdmin);
     void deleteAllBySendingTeam(UUID sendingTeam);

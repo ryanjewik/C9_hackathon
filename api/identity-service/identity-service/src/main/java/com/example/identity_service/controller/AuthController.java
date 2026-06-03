@@ -2,14 +2,20 @@ package com.example.identity_service.controller;
 
 import com.example.identity_service.dto.LoginDto;
 import com.example.identity_service.dto.RegisterDto;
+import com.example.identity_service.dto.UpdateProfileDto;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 import com.example.identity_service.service.AuthService;
 import com.example.identity_service.dto.ApiKeyTokenRequestDto;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import java.util.Map;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -68,5 +74,28 @@ public class AuthController {
             "token_type", "Bearer",
             "expires_in", Long.valueOf(apiKeyTokenTtlMs / 1000)
         ));
+    }
+
+    @GetMapping("/me")
+    public ResponseEntity<?> getMe(@AuthenticationPrincipal Jwt jwt) {
+        if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
+        UUID userId;
+        try { userId = UUID.fromString(jwt.getSubject()); } catch (Exception ex) {
+            return ResponseEntity.status(401).body(Map.of("error", "invalid_token_subject"));
+        }
+        return ResponseEntity.ok(authService.getMe(userId));
+    }
+
+    @PatchMapping("/profile")
+    public ResponseEntity<?> updateProfile(@AuthenticationPrincipal Jwt jwt, @RequestBody UpdateProfileDto dto) {
+        if (jwt == null) return ResponseEntity.status(401).body(Map.of("error", "authentication_required"));
+        UUID userId;
+        try { userId = UUID.fromString(jwt.getSubject()); } catch (Exception ex) {
+            return ResponseEntity.status(401).body(Map.of("error", "invalid_token_subject"));
+        }
+        log.info("Profile update attempt: userId={}", userId);
+        String newToken = authService.updateProfile(userId, dto);
+        log.info("Profile update success: userId={}", userId);
+        return ResponseEntity.ok(Map.of("access_token", newToken, "token_type", "Bearer"));
     }
 }

@@ -69,6 +69,63 @@ public class TeamAdminService {
         return teamMemberRepository.findAllByIdTeamId(teamId);
     }
 
+    /** Invite by username or email string — returns a result code + optional invitation. */
+    public enum InviteResult { OK, USER_NOT_FOUND, ALREADY_MEMBER, ALREADY_INVITED, NOT_ALLOWED, TEAM_NOT_FOUND }
+
+    public static class InviteByUsernameResult {
+        public final InviteResult code;
+        public final Invitation invitation;
+        InviteByUsernameResult(InviteResult code, Invitation inv) { this.code = code; this.invitation = inv; }
+    }
+
+    @Transactional
+    public InviteByUsernameResult inviteByUsernameOrEmail(UUID teamId, String usernameOrEmail, UUID sendingAdmin) {
+        if (usernameOrEmail == null || usernameOrEmail.isBlank()) return new InviteByUsernameResult(InviteResult.USER_NOT_FOUND, null);
+
+        // Resolve target user
+        com.example.identity_service.entity.User target = null;
+        if (usernameOrEmail.contains("@")) {
+            target = authRepository.findByEmail(usernameOrEmail).orElse(null);
+        } else {
+            target = authRepository.findByUsername(usernameOrEmail).orElse(null);
+        }
+        if (target == null) return new InviteByUsernameResult(InviteResult.USER_NOT_FOUND, null);
+
+        UUID targetId = target.getId();
+
+        // Team exists?
+        Optional<Team> tOpt = teamAdminRepository.findById(teamId);
+        if (tOpt.isEmpty()) return new InviteByUsernameResult(InviteResult.TEAM_NOT_FOUND, null);
+        Team t = tOpt.get();
+
+        // Permission check: owner or admin
+        boolean allowed = sendingAdmin.equals(t.getOwnerUserId());
+        if (!allowed) {
+            for (TeamMember m : teamMemberRepository.findAllByIdUserId(sendingAdmin)) {
+                if (m.getId().getTeamId().equals(teamId) && "admin".equalsIgnoreCase(m.getRole())) { allowed = true; break; }
+            }
+        }
+        if (!allowed) return new InviteByUsernameResult(InviteResult.NOT_ALLOWED, null);
+
+        // Already a member?
+        if (targetId.equals(t.getOwnerUserId())) return new InviteByUsernameResult(InviteResult.ALREADY_MEMBER, null);
+        for (TeamMember m : teamMemberRepository.findAllByIdUserId(targetId)) {
+            if (m.getId().getTeamId().equals(teamId)) return new InviteByUsernameResult(InviteResult.ALREADY_MEMBER, null);
+        }
+
+        // Already invited?
+        if (invitationRepository.existsBySendingTeamAndReceivingPlayer(teamId, targetId))
+            return new InviteByUsernameResult(InviteResult.ALREADY_INVITED, null);
+
+        Invitation inv = new Invitation(teamId, targetId, sendingAdmin);
+        try {
+            Invitation saved = invitationRepository.save(inv);
+            return new InviteByUsernameResult(InviteResult.OK, saved);
+        } catch (Exception ex) {
+            return new InviteByUsernameResult(InviteResult.NOT_ALLOWED, null);
+        }
+    }
+
     @Transactional
     public Optional<Invitation> invite(UUID teamId, UUID receivingPlayer, UUID sendingAdmin) {
         // Basic checks: team exists and sendingAdmin is owner or admin member
@@ -390,5 +447,29 @@ public class TeamAdminService {
         } catch (Exception ex) {
             return false;
         }
+    }
+
+    /** Get basic info for a single team. */
+    public Optional<Team> getTeamInfo(UUID teamId) {
+        return teamAdminRepository.findById(teamId);
+    }
+
+    /** Return team members with their usernames resolved from the users table. */
+    public java.util.List<java.util.Map<String, Object>> viewTeamMembersRich(UUID teamId) {
+        java.util.List<TeamMember> members = teamMemberRepository.findAllByIdTeamId(teamId);
+        java.util.List<java.util.Map<String, Object>> out = new java.util.ArrayList<>();
+        for (TeamMember m : members) {
+            UUID uid = m.getId().getUserId();
+            String username = authRepository.findById(uid)
+                .map(com.example.identity_service.entity.User::getUsername)
+                .orElse(uid.toString());
+            java.util.Map<String, Object> entry = new java.util.HashMap<>();
+            entry.put("userId", uid.toString());
+            entry.put("username", username);
+            entry.put("role", m.getRole());
+            entry.put("joinedAt", m.getCreatedAt() != null ? m.getCreatedAt().toString() : null);
+            out.add(entry);
+        }
+        return out;
     }
 }
