@@ -9,6 +9,7 @@ import re
 import shutil
 import statistics
 import time
+from collections import Counter
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field, asdict
@@ -97,6 +98,122 @@ def crop(frame: np.ndarray, roi_px: Tuple[int, int, int, int]) -> np.ndarray:
     return frame[y:y+h, x:x+w]
 
 
+def _build_player_agent_map_from_ocr(
+    vod_path: str,
+    known_left_agents: List[str],
+    known_right_agents: List[str],
+    left_player_pool: List[str],
+    right_player_pool: List[str],
+    match_start_s: Optional[float],
+    job_id: str,
+) -> Dict[str, str]:
+    """
+    OCR-scan the player card HUD around match start to get the per-slot player names,
+    then zip them with the known agent lists to produce a player→agent dict.
+    Returns {} if OCR fails or yields too few results.
+    """
+    import cv2
+    from collections import Counter
+    from difflib import SequenceMatcher
+
+    # Scan window: use match_start_s +15 s to +75 s, falling back to t=148-220 s.
+    scan_start = (match_start_s + 15.0) if match_start_s is not None else 148.0
+    scan_end   = min(scan_start + 75.0, scan_start + 75.0)
+    stride     = 5.0
+
+    LEFT_TEAM_X  = 0.005
+    RIGHT_TEAM_X = 0.820
+    CARD_W = 0.175
+    CARD_H = 0.090
+    PLAYER_Y = [0.505, 0.605, 0.705, 0.805, 0.905]
+    NAME_L = (0.19, 0.02, 0.40, 0.36)
+    NAME_R = (0.45, 0.02, 0.37, 0.36)
+
+    def _ocr_name(img) -> Optional[str]:
+        try:
+            from app.services.ocr.ocr_engine import OCREngine
+            engine = getattr(_build_player_agent_map_from_ocr, "_ocr_engine", None)
+            if engine is None:
+                engine = OCREngine()
+                _build_player_agent_map_from_ocr._ocr_engine = engine
+            scale = 3
+            h, w = img.shape[:2]
+            scaled = cv2.resize(img, (w * scale, h * scale), interpolation=cv2.INTER_CUBIC)
+            text = engine.read_text(scaled)
+            text = text.strip() if text else ""
+            # Keep only alphanumeric + underscore/dash
+            import re
+            text = re.sub(r"[^A-Za-z0-9_\-]", "", text)
+            return text if len(text) >= 2 else None
+        except Exception:
+            return None
+
+    cap = cv2.VideoCapture(vod_path)
+    if not cap.isOpened():
+        return {}
+
+    left_name_votes:  List[Counter] = [Counter() for _ in range(5)]
+    right_name_votes: List[Counter] = [Counter() for _ in range(5)]
+
+    t = scan_start
+    while t <= scan_end:
+        cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+        ret, frame = cap.read()
+        if not ret:
+            t += stride
+            continue
+        fh, fw = frame.shape[:2]
+        for side, team_x, name_coords, name_votes in (
+            ("left",  LEFT_TEAM_X,  NAME_L, left_name_votes),
+            ("right", RIGHT_TEAM_X, NAME_R, right_name_votes),
+        ):
+            for i, py in enumerate(PLAYER_Y):
+                cx, cy = int(team_x * fw), int(py * fh)
+                cw_, ch_ = int(CARD_W * fw), int(CARD_H * fh)
+                card = frame[cy:cy + ch_, cx:cx + cw_]
+                if card.size == 0:
+                    continue
+                nx, ny, nw, nh = name_coords
+                px_, py_ = int(nx * cw_), int(ny * ch_)
+                pw, pnh  = max(1, int(nw * cw_)), max(1, int(nh * ch_))
+                name_img = card[py_:py_ + pnh, px_:px_ + pw]
+                name = _ocr_name(name_img)
+                if name:
+                    name_votes[i][name] += 1
+        t += stride
+    cap.release()
+
+    def _best_name(votes: Counter, pool: List[str]) -> Optional[str]:
+        if not votes:
+            return None
+        raw = votes.most_common(1)[0][0]
+        if not pool:
+            return raw
+        best_s, best_m = 0.0, None
+        for p in pool:
+            s = SequenceMatcher(None, raw.lower(), p.lower()).ratio()
+            if s > best_s:
+                best_s, best_m = s, p
+        return best_m if best_s >= 0.50 else raw
+
+    result: Dict[str, str] = {}
+    for i, agent in enumerate(known_left_agents):
+        if i >= 5:
+            break
+        name = _best_name(left_name_votes[i], left_player_pool)
+        if name and agent:
+            result[name] = agent.lower()
+            print(f"[{job_id}] OCR pre-scan left_{i+1}: {name} → {agent}")
+    for i, agent in enumerate(known_right_agents):
+        if i >= 5:
+            break
+        name = _best_name(right_name_votes[i], right_player_pool)
+        if name and agent:
+            result[name] = agent.lower()
+            print(f"[{job_id}] OCR pre-scan right_{i+1}: {name} → {agent}")
+    return result
+
+
 class VODProcessor:
     """
     Main VOD processing pipeline.
@@ -183,6 +300,9 @@ class VODProcessor:
         left_player_pool: Optional[List[str]] = None,
         right_player_pool: Optional[List[str]] = None,
         strict_roster: bool = False,
+        known_left_agents: Optional[List[str]] = None,
+        known_right_agents: Optional[List[str]] = None,
+        player_to_agent: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
         Process a VOD file and extract timeline data.
@@ -197,6 +317,8 @@ class VODProcessor:
             map_name: Map name (e.g., "Abyss")
             left_player_pool: All players who have ever played for left team (for OCR validation)
             right_player_pool: All players who have ever played for right team (for OCR validation)
+            known_left_agents: Known agent names for left team — skips HUD scan when provided
+            known_right_agents: Known agent names for right team — skips HUD scan when provided
             strict_roster: If True, use ONLY the provided player pools for matching
                           (skip DB historical roster loading). Best when exact 5v5 rosters known.
             
@@ -393,19 +515,81 @@ class VODProcessor:
             _minimap_roi_px  = None
             _minimap_sample_interval = max(1, int(fps * 2.0))  # sample every ~2 s
             _minimap_last_sampled_idx = -_minimap_sample_interval
+            _hud_detector = None
             if self._left_player_pool and self._right_player_pool:
                 try:
-                    from app.services.processing.minimap_tracker import MinimapTracker
+                    from app.services.processing.minimap_tracker import (
+                        MinimapTracker,
+                        HUDAgentDetector,
+                    )
+                    # If caller provided known agents, pass them directly so the
+                    # AgentTemplateMatcher is restricted at init (no HUD scan needed).
+                    _init_left_agents  = known_left_agents  if known_left_agents  else None
+                    _init_right_agents = known_right_agents if known_right_agents else None
                     _minimap_tracker = MinimapTracker(
                         left_players=self._left_player_pool,
                         right_players=self._right_player_pool,
                         left_color="teal",
                         right_color="red",
                         agents_dir="/app/crops_unlabeled",
+                        known_left_agents=_init_left_agents,
+                        known_right_agents=_init_right_agents,
                     )
                     print(f"[{job_id}] MinimapTracker initialized (sample every ~2 s)")
+                    if _init_left_agents or _init_right_agents:
+                        print(f"[{job_id}] Known agents supplied — skipping HUD scan. "
+                              f"left={_init_left_agents}  right={_init_right_agents}")
+                        # Use caller-supplied player→agent map if provided,
+                        # otherwise attempt OCR pre-scan (may fail if GPU is busy).
+                        _pa_map = player_to_agent or {}
+                        if _pa_map:
+                            print(f"[{job_id}] Using supplied player→agent map: {_pa_map}")
+                            _minimap_tracker.set_player_agent_map(_pa_map)
+                        else:
+                            try:
+                                _pa_map = _build_player_agent_map_from_ocr(
+                                    vod_path=video_path,
+                                    known_left_agents=_init_left_agents or [],
+                                    known_right_agents=_init_right_agents or [],
+                                    left_player_pool=self._left_player_pool or [],
+                                    right_player_pool=self._right_player_pool or [],
+                                    match_start_s=None,
+                                    job_id=job_id,
+                                )
+                                if _pa_map:
+                                    print(f"[{job_id}] Pre-scan player→agent map: {_pa_map}")
+                                    _minimap_tracker.set_player_agent_map(_pa_map)
+                            except Exception as _scan_err:
+                                print(f"[{job_id}] WARNING: OCR pre-scan failed: {_scan_err}")
+                    else:
+                        # HUD agent detector — scan deferred to ~30 s after match start
+                        # so the player-card icons are visible (pre-match content may
+                        # not show the full in-game HUD).
+                        _killfeed_dir = "/app/valorant_resources/agents_killfeed"
+                        if os.path.isdir(_killfeed_dir):
+                            hd = HUDAgentDetector(_killfeed_dir)
+                            if hd.ready:
+                                _hud_detector = hd
+                                print(f"[{job_id}] HUDAgentDetector ready — "
+                                      f"roster scan deferred to match+30 s")
                 except Exception as _mm_err:
                     print(f"[{job_id}] WARNING: MinimapTracker init failed: {_mm_err}")
+
+            # HUD roster vote state — inline scanning during the main loop
+            # Skip entirely if known agents were supplied at call time.
+            _known_agents_supplied = bool(known_left_agents or known_right_agents)
+            _match_start_s:  Optional[float] = None
+            _hud_roster_done: bool = (_hud_detector is None or _known_agents_supplied)
+            _hud_left_votes:  List[Counter] = [Counter() for _ in range(5)]
+            _hud_right_votes: List[Counter] = [Counter() for _ in range(5)]
+            # Per-slot player name OCR votes (Counter of OCR'd names per slot)
+            _hud_left_name_votes:  List[Counter] = [Counter() for _ in range(5)]
+            _hud_right_name_votes: List[Counter] = [Counter() for _ in range(5)]
+            # Lazy PlayerNameExtractor — only created if HUD scan is running
+            _hud_name_extractor = None
+            _HUD_SCAN_DELAY_S  = 30.0   # start scanning this many seconds after 0-0
+            _HUD_SCAN_WINDOW_S = 60.0   # give up after this many seconds of scanning
+            _HUD_MIN_VOTES     = 3      # votes per slot required to finalise
             _minimap_current_round = 1
             
             # Pre-compute ROI pixel coordinates (normal + TEAM COMMS)
@@ -442,7 +626,7 @@ class VODProcessor:
             # Processing loop
             all_events: List[Event] = []
             frame_idx = 0
-            sample_interval = max(1, int(fps / self.settings.frame_sample_fps))
+            sample_interval = max(1, round(fps / self.settings.frame_sample_fps))
             skipped_replay_frames = 0
             skipped_transition_frames = 0
             skipped_prematch_frames = 0
@@ -548,8 +732,9 @@ class VODProcessor:
                 # Gate: skip killfeed detection until match starts (0-0 score confirmed)
                 if not match_started:
                     if top_hud_detector and top_hud_detector.has_confirmed_zero_zero():
-                        match_started = True
-                        print(f"[PROC] Match started at t={t_ms/1000:.1f}s — enabling killfeed detection", flush=True)
+                        match_started  = True
+                        _match_start_s = t_ms / 1000.0
+                        print(f"[PROC] Match started at t={_match_start_s:.1f}s — enabling killfeed detection", flush=True)
                     else:
                         # Still run TopHUD detector to look for 0-0 score, but skip killfeed
                         skipped_prematch_frames += 1
@@ -612,10 +797,90 @@ class VODProcessor:
 
                 all_events.extend(frame_events)
 
+                # ── HUD agent roster detection (inline, ~30 s after match start) ──
+                # The full in-game HUD (with player-card agent icons) isn't visible
+                # until about 30 s after the 0-0 score is confirmed.  We scan live
+                # frames here — no second VideoCapture or VOD seek needed — and
+                # accumulate per-slot votes until we have enough confidence, then
+                # call apply_roster() to restrict the AgentTemplateMatcher.
+                # Simultaneously, also OCR the player_name sub-region of each slot
+                # so we can build a direct player → agent mapping without tracking.
+                if _hud_detector is not None and not _hud_roster_done and _match_start_s is not None:
+                    _elapsed_s = t_ms / 1000.0 - _match_start_s
+                    if _elapsed_s >= _HUD_SCAN_DELAY_S:
+                        try:
+                            _dets = _hud_detector.detect_from_frame(frame)
+                            for _i in range(5):
+                                _a = _dets.get(f"left_{_i+1}")
+                                if _a: _hud_left_votes[_i][_a]  += 1
+                                _a = _dets.get(f"right_{_i+1}")
+                                if _a: _hud_right_votes[_i][_a] += 1
+                        except Exception:
+                            pass
+                        # Also OCR player names from same slots (lazy-init extractor)
+                        try:
+                            if _hud_name_extractor is None:
+                                from vod_processor.app.services.ocr.player_name_extractor import PlayerNameExtractor
+                                _hud_name_extractor = PlayerNameExtractor()
+                            _left_players, _right_players = _hud_name_extractor.extract_players_from_frame(frame)
+                            for _p in _left_players:
+                                if _p.name and _p.slot >= 1:
+                                    _hud_left_name_votes[_p.slot - 1][_p.name] += 1
+                            for _p in _right_players:
+                                if _p.name and _p.slot >= 1:
+                                    _hud_right_name_votes[_p.slot - 1][_p.name] += 1
+                        except Exception:
+                            pass
+                        _all_voted = all(
+                            bool(v) and v.most_common(1)[0][1] >= _HUD_MIN_VOTES
+                            for v in _hud_left_votes + _hud_right_votes
+                        )
+                        _timed_out = _elapsed_s > _HUD_SCAN_DELAY_S + _HUD_SCAN_WINDOW_S
+                        if _all_voted or _timed_out:
+                            _l = [v.most_common(1)[0][0] if v else None for v in _hud_left_votes]
+                            _r = [v.most_common(1)[0][0] if v else None for v in _hud_right_votes]
+                            _la = [a for a in _l if a]
+                            _ra = [a for a in _r if a]
+                            _why = "timeout" if _timed_out else "confirmed"
+                            print(f"[{job_id}] HUD roster ({_why}) — left: {_la}  right: {_ra}")
+                            # Build player → agent map from per-slot majority votes
+                            _player_to_agent: Dict[str, str] = {}
+                            for _side, _agent_votes, _name_votes in (
+                                ("left",  _hud_left_votes,  _hud_left_name_votes),
+                                ("right", _hud_right_votes, _hud_right_name_votes),
+                            ):
+                                for _i in range(5):
+                                    _agent = _agent_votes[_i].most_common(1)[0][0] if _agent_votes[_i] else None
+                                    _name_raw = _name_votes[_i].most_common(1)[0][0] if _name_votes[_i] else None
+                                    if _agent and _name_raw:
+                                        # Fuzzy-match against known player pool to get canonical name
+                                        _pool = (self._left_player_pool if _side == "left"
+                                                 else self._right_player_pool) or []
+                                        _canon = _name_raw
+                                        if _pool:
+                                            from difflib import SequenceMatcher
+                                            _best_s, _best_c = 0.0, None
+                                            for _pn in _pool:
+                                                _s = SequenceMatcher(None, _name_raw.lower(), _pn.lower()).ratio()
+                                                if _s > _best_s:
+                                                    _best_s, _best_c = _s, _pn
+                                            if _best_s >= 0.55 and _best_c:
+                                                _canon = _best_c
+                                        _player_to_agent[_canon] = _agent
+                                        print(f"[{job_id}] HUD slot {_side}_{_i+1}: {_canon} → {_agent}")
+                            if _player_to_agent:
+                                print(f"[{job_id}] Player→agent map: {_player_to_agent}")
+                                if _minimap_tracker is not None:
+                                    _minimap_tracker.set_player_agent_map(_player_to_agent)
+                            if _minimap_tracker is not None:
+                                _minimap_tracker.apply_roster(_la, _ra)
+                            _hud_roster_done = True
+
                 # ── Minimap position tracking (every ~2 s of gameplay) ─────
                 if (_minimap_tracker is not None
                         and _minimap_roi_px is not None
                         and match_started
+                        and _hud_roster_done
                         and (frame_idx - _minimap_last_sampled_idx) >= _minimap_sample_interval):
                     _minimap_last_sampled_idx = frame_idx
                     try:

@@ -16,6 +16,7 @@ from itertools import product
 from config import (
     ROI_CONFIG,
     PLAYER_CARD_SUBREGIONS,
+    PLAYER_CARD_SUBREGIONS_RIGHT,
 )
 
 
@@ -193,8 +194,9 @@ class PlayerNameExtractor:
         if card.size == 0:
             return None
         
-        # Get player name subregion within the card
-        name_roi = PLAYER_CARD_SUBREGIONS["player_name"]
+        # Get player name subregion within the card (right-side cards are mirrored)
+        _subregions = PLAYER_CARD_SUBREGIONS_RIGHT if team == "right" else PLAYER_CARD_SUBREGIONS
+        name_roi = _subregions["player_name"]
         nx = int(name_roi[0] * w)
         ny = int(name_roi[1] * h)
         nw = int(name_roi[2] * w)

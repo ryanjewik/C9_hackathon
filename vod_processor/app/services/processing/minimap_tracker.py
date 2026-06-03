@@ -174,6 +174,10 @@ class AgentTemplateMatcher:
         for entry in sorted(os.listdir(agents_dir)):
             entry_path = os.path.join(agents_dir, entry)
             if os.path.isdir(entry_path):
+                # Skip the spike subfolder — spike templates are handled by
+                # SpikeTemplateMatcher, not AgentTemplateMatcher.
+                if entry.lower() == "spike":
+                    continue
                 # Multi-crop mode: subdir named after agent
                 name = entry.lower()
                 crop_files = [
@@ -441,6 +445,352 @@ class AgentTemplateMatcher:
                 occupied.append((cx, cy))
         return kept
 
+    def restrict_to_agents(self, names: List[str]) -> None:
+        """Remove all templates for agents not in *names* (case-insensitive).
+
+        Call once after __init__ to constrain matching to the agents actually
+        present in the match.  This eliminates phantom agents (e.g. 'miks',
+        'chamber') that would otherwise score weakly but still win when the
+        true agent's template is absent or has a similar face crop.
+        """
+        keep = {n.lower() for n in names}
+        removed = [k for k in list(self._templates) if k not in keep]
+        for k in removed:
+            del self._templates[k]
+        if removed:
+            print(f"[AgentTemplateMatcher] Restricted to {len(self._templates)} agents "
+                  f"(dropped: {', '.join(sorted(removed))})")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HUD agent detector — reads player-card agent icons at match start
+# ─────────────────────────────────────────────────────────────────────────────
+
+class HUDAgentDetector:
+    """
+    Detects which agents are in the match by matching player-card HUD icons
+    against the reference killfeed portrait images.
+
+    The top-level player-card ROI is defined in settings.py; the agent icon
+    occupies the leftmost ~14 %×46 % sub-region of each card.  NCC against
+    single-file killfeed reference images (one PNG per agent) gives a clean
+    roster with very few frames needed.
+
+    Typical usage
+    ─────────────
+        detector = HUDAgentDetector("valorant_resources/agents_killfeed")
+        cap = cv2.VideoCapture(vod_path)
+        left_agents, right_agents = detector.detect_roster(cap, scan_end_s=60)
+        tracker = MinimapTracker(...,
+                                 known_left_agents=left_agents,
+                                 known_right_agents=right_agents)
+    """
+
+    TEMPLATE_SIZE = 32   # px — NCC template size
+    NCC_THRESHOLD = 0.35  # minimum score to accept a match
+
+    # Player card ROI constants (must match settings.py)
+    LEFT_TEAM_X       = 0.005
+    RIGHT_TEAM_X      = 0.820
+    PLAYER_CARD_W     = 0.175
+    PLAYER_CARD_H     = 0.090
+    LEFT_PLAYER_Y     = [0.505, 0.605, 0.705, 0.805, 0.905]
+    RIGHT_PLAYER_Y    = [0.505, 0.605, 0.705, 0.805, 0.905]
+    # Agent icon sub-region within the card (normalised to card size)
+    # Left cards: portrait is top-left; right cards: portrait is top-right (mirrored)
+    AGENT_ICON_XYWH_LEFT  = (0.00, 0.00, 0.19, 0.50)
+    AGENT_ICON_XYWH_RIGHT = (0.82, 0.00, 0.18, 0.50)
+    AGENT_ICON_XYWH       = (0.00, 0.00, 0.19, 0.50)  # legacy alias (left)
+
+    def __init__(self, killfeed_dir: str) -> None:
+        self._templates: Dict[str, np.ndarray] = {}
+        if os.path.isdir(killfeed_dir):
+            self._load_templates(killfeed_dir)
+
+    @property
+    def ready(self) -> bool:
+        return len(self._templates) > 0
+
+    def _load_templates(self, killfeed_dir: str) -> None:
+        ts    = self.TEMPLATE_SIZE
+        _EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+        n = 0
+        for fname in sorted(os.listdir(killfeed_dir)):
+            fpath = os.path.join(killfeed_dir, fname)
+            if not os.path.isfile(fpath):
+                continue
+            if os.path.splitext(fname)[1].lower() not in _EXTS:
+                continue
+            name = os.path.splitext(fname)[0].lower()
+            img  = _load_image_bgr(fpath)
+            if img is not None:
+                self._templates[name] = cv2.resize(img, (ts, ts))
+                n += 1
+        print(f"[HUDAgentDetector] Loaded {n} killfeed templates from {killfeed_dir}")
+
+    def _extract_agent_icon(self, frame_bgr: np.ndarray,
+                            card_x: float, card_y: float,
+                            right_side: bool = False) -> Optional[np.ndarray]:
+        """Extract the agent icon sub-region from one player card."""
+        fh, fw = frame_bgr.shape[:2]
+        cx  = int(card_x * fw)
+        cy  = int(card_y * fh)
+        cw  = int(self.PLAYER_CARD_W * fw)
+        ch  = int(self.PLAYER_CARD_H * fh)
+        card = frame_bgr[cy:cy + ch, cx:cx + cw]
+        if card.size == 0:
+            return None
+        ax, ay, aw, ah = (self.AGENT_ICON_XYWH_RIGHT if right_side
+                          else self.AGENT_ICON_XYWH_LEFT)
+        ix = int(ax * cw); iy = int(ay * ch)
+        iw = max(1, int(aw * cw)); ih = max(1, int(ah * ch))
+        icon = card[iy:iy + ih, ix:ix + iw]
+        return icon if icon.size > 0 else None
+
+    def _match_icon(self, icon_bgr: np.ndarray) -> Tuple[Optional[str], float]:
+        """Return (agent_name, score) or (None, 0.0)."""
+        ts = self.TEMPLATE_SIZE
+        try:
+            resized = cv2.resize(icon_bgr, (ts, ts))
+        except cv2.error:
+            return None, 0.0
+        best_name:  Optional[str] = None
+        best_score: float         = self.NCC_THRESHOLD - 1e-6
+        for name, tmpl in self._templates.items():
+            score = float(cv2.matchTemplate(resized, tmpl, cv2.TM_CCOEFF_NORMED)[0, 0])
+            if score > best_score:
+                best_score = score
+                best_name  = name
+        return best_name, max(0.0, best_score)
+
+    def detect_from_frame(self, frame_bgr: np.ndarray) -> Dict[str, Optional[str]]:
+        """Return {slot: agent} for all 10 player slots in one frame.
+
+        Right-team icons are horizontally flipped in the broadcast layout
+        (the card mirrors the left-team layout), so the extracted crop is
+        flipped before NCC matching to align with the killfeed reference images.
+        """
+        result: Dict[str, Optional[str]] = {}
+        for side, team_x, player_ys, right_side in (
+            ("left",  self.LEFT_TEAM_X,  self.LEFT_PLAYER_Y,  False),
+            ("right", self.RIGHT_TEAM_X, self.RIGHT_PLAYER_Y, True),
+        ):
+            for i, py in enumerate(player_ys):
+                icon = self._extract_agent_icon(frame_bgr, team_x, py,
+                                                right_side=right_side)
+                if icon is None:
+                    result[f"{side}_{i+1}"] = None
+                    continue
+                # Right-side icons are already on the correct side; flip for NCC
+                # alignment with the left-facing killfeed reference portraits
+                if right_side:
+                    icon = cv2.flip(icon, 1)
+                name, _score = self._match_icon(icon)
+                result[f"{side}_{i+1}"] = name
+        return result
+
+    def detect_roster(
+        self,
+        cap: "cv2.VideoCapture",
+        scan_start_s: float = 5.0,
+        scan_end_s:   float = 60.0,
+        scan_stride_s: float = 5.0,
+        min_votes: int = 2,
+    ) -> Tuple[List[Optional[str]], List[Optional[str]]]:
+        """Scan several frames and return (left_agents[5], right_agents[5]).
+
+        Each element is the majority-vote agent name, or None if not detected
+        with enough confidence.  Slots with None should be excluded from the
+        MinimapTracker known_*_agents lists (don't restrict to None).
+        """
+        from collections import Counter  # avoid top-level import overhead
+        left_votes:  List[Counter] = [Counter() for _ in range(5)]
+        right_votes: List[Counter] = [Counter() for _ in range(5)]
+
+        t = scan_start_s
+        while t <= scan_end_s:
+            cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+            ret, frame = cap.read()
+            if not ret:
+                break
+            dets = self.detect_from_frame(frame)
+            for i in range(5):
+                a = dets.get(f"left_{i+1}")
+                if a:
+                    left_votes[i][a] += 1
+                a = dets.get(f"right_{i+1}")
+                if a:
+                    right_votes[i][a] += 1
+            t += scan_stride_s
+
+        def _pick(votes: Counter) -> Optional[str]:
+            if not votes:
+                return None
+            top, count = votes.most_common(1)[0]
+            return top if count >= min_votes else None
+
+        left_agents  = [_pick(v) for v in left_votes]
+        right_agents = [_pick(v) for v in right_votes]
+        print(f"[HUDAgentDetector] Left  roster: {left_agents}")
+        print(f"[HUDAgentDetector] Right roster: {right_agents}")
+        return left_agents, right_agents
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Spike template matcher
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SpikeTemplateMatcher:
+    """
+    Matches spike icon templates against the minimap via grayscale NCC.
+
+    The spike appears as a distinctive yellow hexagonal icon on the minimap
+    when dropped on the floor or planted.  Template images must live in a
+    directory (typically {agents_dir}/spike/) and should be 72×72 crops
+    saved at 3× zoom (the same format produced by _save_blob_crop).
+
+    The class is kept deliberately simple:
+      • No circular mask — the spike icon is small enough that surrounding
+        map pixels add only minor noise.
+      • Grayscale NCC — sufficient because the spike shape is highly
+        distinctive regardless of colour.
+      • Agent-position suppression in the result map prevents the spike
+        NCC from firing on agent portrait faces (which can appear yellowish).
+
+    FP-prevention note
+    ──────────────────
+    This class is entirely separate from AgentTemplateMatcher and from the
+    crop-save quality gates.  It cannot trigger or bypass any of the 9
+    crop-save gates.  Agent tracking is unaffected by spike NCC results.
+    """
+
+    # Spike crops are saved at 3× zoom (same as agent crops).
+    # Resize to TEMPLATE_SIZE for 1× NCC on the actual minimap.
+    TEMPLATE_SIZE = 24   # px
+    NCC_THRESHOLD = 0.45  # minimum NCC to accept a spike hit.
+                          # 0.38 fired on map-corner textures (bottom-right FP);
+                          # raised to 0.45 after spike template calibration.
+
+    def __init__(self, spike_dir: str) -> None:
+        self._templates: List[np.ndarray] = []  # list of (TS×TS) uint8 BGR
+        if os.path.isdir(spike_dir):
+            self._load_templates(spike_dir)
+
+    @property
+    def ready(self) -> bool:
+        return len(self._templates) > 0
+
+    def _load_templates(self, spike_dir: str) -> None:
+        _EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+        ts = self.TEMPLATE_SIZE
+        n = 0
+        for fname in sorted(os.listdir(spike_dir)):
+            fpath = os.path.join(spike_dir, fname)
+            if os.path.isfile(fpath) and os.path.splitext(fname)[1].lower() in _EXTS:
+                img = _load_image_bgr(fpath)
+                if img is not None:
+                    # Crops are 72×72 (3× zoom); downscale to native 1×
+                    self._templates.append(cv2.resize(img, (ts, ts)))
+                    n += 1
+        if n:
+            print(f"[SpikeTemplateMatcher] Loaded {n} spike template(s) from {spike_dir}")
+        else:
+            print(f"[SpikeTemplateMatcher] WARNING: no spike templates found in {spike_dir}")
+
+    def find(
+        self,
+        minimap_bgr: np.ndarray,
+        suppress_px: List[Tuple[float, float]],
+        suppress_r: int = 16,
+    ) -> Optional[Tuple[float, float, float]]:
+        """
+        Slide all spike templates across the minimap (grayscale NCC) and
+        return (cx_px, cy_px, score) of the best hit, or None.
+
+        suppress_px  : (cx_px, cy_px) of every detected agent blob this frame.
+                       A suppress_r-pixel radius around each agent is blanked
+                       in the NCC result map so agent faces (which may appear
+                       yellowish) do not produce false spike hits.
+        suppress_r   : pixel radius to suppress around each agent (default 16,
+                       slightly larger than the agent icon radius ≈11 px so
+                       the ring + a small margin are both excluded).
+        """
+        if not self.ready or minimap_bgr is None or minimap_bgr.size == 0:
+            return None
+
+        ts   = self.TEMPLATE_SIZE
+        half = ts // 2
+        gray = cv2.cvtColor(minimap_bgr, cv2.COLOR_BGR2GRAY)
+
+        # Build merged NCC result (element-wise max across all templates)
+        result: Optional[np.ndarray] = None
+        for tmpl in self._templates:
+            tmpl_g = cv2.cvtColor(tmpl, cv2.COLOR_BGR2GRAY)
+            r = cv2.matchTemplate(gray, tmpl_g, cv2.TM_CCOEFF_NORMED)
+            result = r if result is None else np.maximum(result, r)
+
+        if result is None:
+            return None
+
+        # Blank agent positions in NCC result space.
+        # NCC result[y, x] corresponds to template top-left at (x, y),
+        # i.e. template centre at (x + half, y + half).
+        # To suppress agent at (acx, acy): blank result[acy-half ± r, acx-half ± r].
+        rh, rw = result.shape[:2]
+        for acx, acy in suppress_px:
+            rx = int(round(acx)) - half
+            ry = int(round(acy)) - half
+            x1 = max(0, rx - suppress_r);  y1 = max(0, ry - suppress_r)
+            x2 = min(rw, rx + suppress_r + 1); y2 = min(rh, ry + suppress_r + 1)
+            result[y1:y2, x1:x2] = -1.0
+
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+        if float(max_val) < self.NCC_THRESHOLD:
+            return None
+
+        cx_px = float(max_loc[0]) + half
+        cy_px = float(max_loc[1]) + half
+        return cx_px, cy_px, float(max_val)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Data containers
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SpikeTrack:
+    """
+    Tracks the spike's independent position on the minimap for frames when
+    it is on the ground (dropped) or planted.
+
+    When the spike is carried by a player the carrying BlobTrack.has_spike
+    flag is set instead; no SpikeTrack entry is created for carried state.
+
+    state values
+    ─────────────
+    "ground"  — spike dropped on floor, not yet planted.
+    "planted" — spike is armed; position is now fixed.
+    """
+
+    __slots__ = ("positions", "state", "last_cx", "last_cy", "last_seen_ms")
+
+    def __init__(
+        self,
+        cx_norm: float,
+        cy_norm: float,
+        t_ms: float,
+        state: str = "ground",
+    ) -> None:
+        self.positions: List[Tuple[float, float, float]] = [(t_ms, cx_norm, cy_norm)]
+        self.state:        str   = state  # "ground" | "planted"
+        self.last_cx:      float = cx_norm
+        self.last_cy:      float = cy_norm
+        self.last_seen_ms: float = t_ms
+
+    def update(self, cx_norm: float, cy_norm: float, t_ms: float) -> None:
+        self.last_cx      = cx_norm
+        self.last_cy      = cy_norm
+        self.last_seen_ms = t_ms
+        self.positions.append((t_ms, cx_norm, cy_norm))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -648,11 +998,21 @@ class MinimapTracker:
         agents_dir:  Optional[str] = None,
         agent_map:   Optional[Dict[str, str]] = None,
         crop_dump_dir: Optional[str] = None,
+        known_left_agents:  Optional[List[str]] = None,
+        known_right_agents: Optional[List[str]] = None,
     ) -> None:
         self.left_players  = [p.lower() for p in left_players]
         self.right_players = [p.lower() for p in right_players]
         self.left_color    = left_color
         self.right_color   = right_color
+
+        # Per-team known agent sets (None = unconstrained)
+        self._known_left_agents:  Optional[set] = (
+            {a.lower() for a in known_left_agents}  if known_left_agents  else None
+        )
+        self._known_right_agents: Optional[set] = (
+            {a.lower() for a in known_right_agents} if known_right_agents else None
+        )
 
         # Agent template matcher (optional)
         self._agent_matcher: Optional[AgentTemplateMatcher] = None
@@ -660,6 +1020,26 @@ class MinimapTracker:
             m = AgentTemplateMatcher(agents_dir)
             if m.ready:
                 self._agent_matcher = m
+                # Restrict templates to the union of both known rosters so
+                # off-roster agents (e.g. 'miks', 'chamber') can never match.
+                _all_known = (
+                    (self._known_left_agents  or set()) |
+                    (self._known_right_agents or set())
+                )
+                if _all_known:
+                    self._agent_matcher.restrict_to_agents(list(_all_known))
+
+        # Spike template matcher (optional — loaded from {agents_dir}/spike/)
+        # Uses NCC to locate the spike on the ground/planted independently
+        # from agent tracking.  Completely separate code path; does NOT
+        # interact with the 9 crop-save quality gates.
+        self._spike_matcher: Optional[SpikeTemplateMatcher] = None
+        if agents_dir:
+            _spike_subdir = os.path.join(agents_dir, "spike")
+            if os.path.isdir(_spike_subdir):
+                sm = SpikeTemplateMatcher(_spike_subdir)
+                if sm.ready:
+                    self._spike_matcher = sm
 
         # Cross-round agent ↔ player mappings (persist across reset_round)
         self._agent_to_player: Dict[str, str] = {
@@ -668,6 +1048,9 @@ class MinimapTracker:
         self._player_to_agent: Dict[str, str] = {
             v: k for k, v in self._agent_to_player.items()
         }
+        # Team-specific reverse maps (populated by set_player_agent_map)
+        self._left_agent_to_player:  Dict[str, str] = {}
+        self._right_agent_to_player: Dict[str, str] = {}
 
         # Per-round state (cleared by reset_round)
         self._tracks: Dict[str, BlobTrack] = {}
@@ -676,6 +1059,8 @@ class MinimapTracker:
         self._last_positions: Dict[str, Tuple[float, float, float]] = {}
         self._round_number = 0
         self._event_buffer: List[dict] = []
+        self._spike_track: Optional[SpikeTrack] = None  # independent spike position
+        self._spike_planted: bool = False                # set by notify_spike_planted
 
         # Crop harvesting (optional — set crop_dump_dir to enable)
         self._crop_dump_dir: Optional[str] = crop_dump_dir
@@ -732,6 +1117,65 @@ class MinimapTracker:
         self._name_to_track.clear()
         self._last_positions.clear()
         self._round_number = round_number
+        self._spike_track   = None
+        self._spike_planted = False
+
+    def apply_roster(
+        self,
+        left_agents:  List[str],
+        right_agents: List[str],
+    ) -> None:
+        """Restrict agent NCC matching to the 10 agents actually in the match.
+
+        Called once from the processing pipeline after the HUD roster scan
+        completes (~30 s into the match).  Updates per-team known-agent sets
+        and prunes the AgentTemplateMatcher template dictionary so off-roster
+        agents (e.g. 'miks', 'chamber') can never win an NCC comparison.
+        """
+        self._known_left_agents  = {a.lower() for a in left_agents}  if left_agents  else None
+        self._known_right_agents = {a.lower() for a in right_agents} if right_agents else None
+        if self._agent_matcher:
+            _all_known = (
+                (self._known_left_agents  or set()) |
+                (self._known_right_agents or set())
+            )
+            if _all_known:
+                self._agent_matcher.restrict_to_agents(list(_all_known))
+        print(
+            f"[MinimapTracker] Roster applied — "
+            f"left: {sorted(self._known_left_agents or [])}  "
+            f"right: {sorted(self._known_right_agents or [])}"
+        )
+
+    def set_player_agent_map(self, player_to_agent: Dict[str, str]) -> None:
+        """Set a direct player → agent binding from the HUD card OCR scan.
+
+        Derived from running NCC on agent_icon and OCR on player_name for
+        each player card slot simultaneously at ~30 s into the match.
+        This is the authoritative mapping used to annotate POSITION_UPDATE
+        events with player names rather than relying on track fragmentation.
+
+        Args:
+            player_to_agent: {canonical_player_name: agent_name} for all 10 players.
+        """
+        self._agent_to_player = {
+            agent.lower(): player for player, agent in player_to_agent.items()
+        }
+        self._player_to_agent = {
+            player: agent.lower() for player, agent in player_to_agent.items()
+        }
+        # Team-specific reverse maps — disambiguate when both teams share an agent name.
+        self._left_agent_to_player = {
+            agent.lower(): player
+            for player, agent in player_to_agent.items()
+            if player.lower() in self.left_players
+        }
+        self._right_agent_to_player = {
+            agent.lower(): player
+            for player, agent in player_to_agent.items()
+            if player.lower() in self.right_players
+        }
+        print(f"[MinimapTracker] Player→agent map set from HUD scan: {player_to_agent}")
 
     def update(
         self,
@@ -1022,9 +1466,34 @@ class MinimapTracker:
         self._update_team_tracks(right_dets, "right", t_ms)
         self._deduplicate_agents_across_teams()
 
-        # ── Spike blobs (always yellow) ───────────────────────────────────────
+        # ── Spike detection (HSV blobs + optional NCC refinement) ────────────
+        # Step 1: HSV colour-blob detection.  Reliable for both carried spike
+        # (yellow blob near a player → has_spike=True) and loose/planted spike
+        # (isolated yellow blob → spike_loose).
         spike_blobs = self._find_spike_blobs(hsv, h, w)
-        spike_loose = self._assign_spike(spike_blobs)   # (x_n, y_n) or None
+
+        # Step 2 (optional): NCC spike template matching with agent-position
+        # suppression.  Adds precision for ground/planted spike when the HSV
+        # blob centroid is imprecise or when the spike is partially occluded.
+        # IMPORTANT: this is a completely independent code path — it never
+        # touches the agent NCC loop, the 9 crop-save gates, or agent tracks.
+        if self._spike_matcher and self._spike_matcher.ready:
+            _ncc_spike = self._spike_matcher.find(
+                minimap_bgr, suppress_px=_all_blob_px
+            )
+            if _ncc_spike is not None:
+                _snx_px, _sny_px, _sncc = _ncc_spike
+                _snx_n,  _sny_n  = _snx_px / w, _sny_px / h
+                # Only add if there is no existing HSV blob within 6 % of the
+                # minimap width at this position (avoids duplicate near-same hits).
+                _MERGE_D = 0.06
+                if not any(
+                    math.hypot(_snx_n - sb[0], _sny_n - sb[1]) < _MERGE_D
+                    for sb in spike_blobs
+                ):
+                    spike_blobs.append((_snx_n, _sny_n, 5.0))  # area=5 sentinel
+
+        spike_loose = self._assign_spike(spike_blobs, t_ms)
 
         # ── Update last-known positions for named tracks ──────────────────────
         for track in self._tracks.values():
@@ -1064,6 +1533,15 @@ class MinimapTracker:
             event["spike_loose"] = {
                 "x_norm": round(spike_loose[0], 4),
                 "y_norm": round(spike_loose[1], 4),
+            }
+
+        # Independent spike track (ground / planted position across frames)
+        if self._spike_track is not None:
+            event["spike_track"] = {
+                "x_norm":       round(self._spike_track.last_cx, 4),
+                "y_norm":       round(self._spike_track.last_cy, 4),
+                "state":        self._spike_track.state,
+                "last_seen_ms": self._spike_track.last_seen_ms,
             }
 
         self._event_buffer.append(event)
@@ -1131,6 +1609,20 @@ class MinimapTracker:
     ) -> Optional[Tuple[float, float, float]]:
         """Return last known (x_norm, y_norm, t_ms) or None."""
         return self._last_positions.get(player_name.lower())
+
+    def notify_spike_planted(self, t_ms: float) -> None:
+        """
+        Notify the tracker that the spike has been planted.
+        Updates the spike track state from "ground" to "planted".
+        Call this when a SPIKE_PLANT event is confirmed by the pipeline.
+        """
+        self._spike_planted = True
+        if self._spike_track is not None:
+            self._spike_track.state = "planted"
+
+    def get_spike_track(self) -> Optional[SpikeTrack]:
+        """Return the current independent spike track, or None if not seen."""
+        return self._spike_track
 
     def flush_events(self) -> List[dict]:
         """Return and clear buffered POSITION_UPDATE events."""
@@ -1443,11 +1935,12 @@ class MinimapTracker:
     def _assign_spike(
         self,
         spike_blobs: List[Tuple[float, float, float]],
+        t_ms: float = 0.0,
     ) -> Optional[Tuple[float, float]]:
         """
         For each yellow blob:
           - If within SPIKE_CARRIER_MAX_DIST of an alive player → has_spike=True.
-          - Otherwise → record as loose spike position.
+          - Otherwise → record as loose spike position and update _spike_track.
         Returns the first loose spike (x_norm, y_norm) found, or None.
         """
         # Clear flags from previous frame
@@ -1469,8 +1962,20 @@ class MinimapTracker:
 
             if best_track is not None:
                 best_track.has_spike = True
+                # Spike is now carried — clear the independent ground track so
+                # the previous drop position is not shown alongside the carrier.
+                # Keep the track once planted (spike can't be un-planted).
+                if not self._spike_planted:
+                    self._spike_track = None
             else:
                 loose = (cx_n, cy_n)
+                # Update the independent spike track (ground / planted)
+                _state = "planted" if self._spike_planted else "ground"
+                if self._spike_track is None:
+                    self._spike_track = SpikeTrack(cx_n, cy_n, t_ms, _state)
+                else:
+                    self._spike_track.state = _state
+                    self._spike_track.update(cx_n, cy_n, t_ms)
 
         return loose
 
@@ -1516,17 +2021,29 @@ class MinimapTracker:
         }
 
         for cx_n, cy_n, _cx_px, _cy_px, agent_name, agent_score, all_scores in sorted_dets:
-            # Enforce per-team uniqueness: if the top agent is already claimed
-            # this frame, fall back to the next-best unique agent.
+            # Enforce per-team uniqueness + known-roster constraint.
+            # If the top agent is already claimed OR not in this team's roster,
+            # fall back to the next-best agent that passes both filters.
+            known_set = (
+                self._known_left_agents  if team == "left"
+                else self._known_right_agents
+            )
             final_agent  = agent_name
             final_score  = agent_score
-            if all_scores and agent_name in claimed_agents:
+            # Reject if claimed or off-roster
+            if final_agent is not None and (
+                final_agent in claimed_agents
+                or (known_set is not None and final_agent not in known_set)
+            ):
                 final_agent = None
                 final_score = 0.0
+            if final_agent is None and all_scores:
                 for a, s in all_scores:
                     if s < self.FACE_CROP_NCC_THRESHOLD:
                         break
-                    if a not in claimed_agents:
+                    if a not in claimed_agents and (
+                        known_set is None or a in known_set
+                    ):
                         final_agent = a
                         final_score = s
                         break
@@ -1560,7 +2077,8 @@ class MinimapTracker:
                     t.agent_score            = final_score
                     t.unidentified_frames    = 0
                     if t.player_name is None:
-                        p = self._agent_to_player.get(final_agent)
+                        _team_map = self._left_agent_to_player if t.team == "left" else self._right_agent_to_player
+                        p = _team_map.get(final_agent) or self._agent_to_player.get(final_agent)
                         if p:
                             self._assign_name(t, p)
                 elif t.agent_name is None:
@@ -1583,7 +2101,8 @@ class MinimapTracker:
                     new_t = BlobTrack(tid, team, cx_n, cy_n, t_ms, final_agent)
                     new_t.agent_score = final_score
                     if final_agent:
-                        p = self._agent_to_player.get(final_agent)
+                        _team_map = self._left_agent_to_player if team == "left" else self._right_agent_to_player
+                        p = _team_map.get(final_agent) or self._agent_to_player.get(final_agent)
                         if p:
                             self._assign_name(new_t, p)
                     self._tracks[tid] = new_t

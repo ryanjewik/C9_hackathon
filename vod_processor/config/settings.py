@@ -126,10 +126,11 @@ ROI_CONFIG: Dict[str, Tuple[float, float, float, float]] = {
 }
 
 # Sub-regions within player cards - FINAL CALIBRATED VALUES
-# For LEFT side cards (right side is mirrored)
+# Left-side cards: agent icon is on the FAR LEFT, player name is centre-left
+# Right-side cards are MIRRORED: agent icon is on the FAR RIGHT, name is centre-right
 PLAYER_CARD_SUBREGIONS: Dict[str, Tuple[float, float, float, float]] = {
-    "agent_icon":    (0.04, 0.04, 0.14, 0.46),
-    "player_name":   (0.19, 0.02, 0.40, 0.36),
+    "agent_icon":    (0.00, 0.00, 0.19, 0.50),   # left cards: portrait top-left
+    "player_name":   (0.19, 0.02, 0.40, 0.36),   # left cards: name centre-left
     "health_shield": (0.62, 0.02, 0.32, 0.36),
     "ult_charge":    (0.02, 0.46, 0.18, 0.52),
     "abilities":     (0.20, 0.50, 0.34, 0.44),
@@ -138,6 +139,12 @@ PLAYER_CARD_SUBREGIONS: Dict[str, Tuple[float, float, float, float]] = {
     "ability_2":     (0.34, 0.52, 0.09, 0.40),
     "ability_3":     (0.46, 0.52, 0.09, 0.40),
     "money":         (0.73, 0.52, 0.20, 0.44),
+}
+
+# Right-side card subregions (mirrored layout)
+PLAYER_CARD_SUBREGIONS_RIGHT: Dict[str, Tuple[float, float, float, float]] = {
+    "agent_icon":    (0.82, 0.00, 0.18, 0.50),   # right cards: portrait top-right
+    "player_name":   (0.45, 0.02, 0.37, 0.36),   # right cards: name centre-right
 }
 
 # Bottom HUD sub-regions
